@@ -103,6 +103,41 @@ pub fn probes(input: TokenStream) -> TokenStream {
 ///   `anyprobe::Native`; for type aliases and newtypes.
 /// - `ret = native | serde | debug`: pass the return value to the return
 ///   probe. Without `ret` the return probe has no arguments.
+/// - `unwind`: also define `{name}__unwind`, which fires when the function
+///   does not return: a panic unwinds through it, or, for an `async fn`, its
+///   future is dropped before it completes. On the normal path the guard
+///   that does this runs no code; its check runs only while unwinding or
+///   dropping. It adds unwinding code to the function and, for an `async
+///   fn`, eight bytes to the future. A panic under `panic = "abort"` never
+///   unwinds, so it does not fire.
+/// - `symbol` or `symbol = "..."`: also export the function under a stable,
+///   unmangled name, `{provider}__{name}` by default, and never inline it,
+///   so that raw uprobes, DTrace's `pid` provider and other tools that
+///   attach by symbol find it. The function must not be generic over types
+///   or consts (rustc also refuses methods of generic `impl` blocks), nor an
+///   `async fn`, and it must not carry `#[inline]`, `#[no_mangle]` or
+///   `#[export_name]`. Two functions with the same symbol fail to link.
+///
+/// # `async fn`
+///
+/// ```
+/// #[anyprobe::probe(provider = "myapp", ret = native)]
+/// async fn fetch(id: u64, path: &str) -> u64 {
+///     // ...
+/// #   id
+/// }
+/// # let _ = fetch(1, "/");
+/// ```
+///
+/// defines `myapp:fetch__entry(invocation, id, path)` and
+/// `myapp:fetch__return(invocation, ret)`. The entry probe fires when the
+/// body starts, at the future's first poll, and the return probe when it
+/// completes. `invocation` is a number unique to the call, so a tracer can
+/// pair an entry with its return when calls interleave; it is 0 on the
+/// return (and unwind) probe of a call that started while the entry probe
+/// was off. It takes one of the six values. With `unwind`, the unwind probe
+/// is `fetch__unwind(invocation, panicking)`: `panicking` is 1 for a panic,
+/// 0 for a future dropped before completion.
 ///
 /// # Arguments
 ///
@@ -122,8 +157,9 @@ pub fn probes(input: TokenStream) -> TokenStream {
 ///
 /// # Not supported
 ///
-/// `async fn`, `const fn`, functions returning `!`, `#[track_caller]`, and
-/// arguments bound by a pattern other than a name or `_`.
+/// `const fn`, functions returning `!`, `#[track_caller]`, arguments bound
+/// by a pattern other than a name or `_`, and functions that return a future
+/// without being `async fn` (`fn f() -> impl Future`, `#[async_trait]`).
 #[proc_macro_attribute]
 pub fn probe(attr: TokenStream, item: TokenStream) -> TokenStream {
     attr::expand(attr.into(), item.into()).into()

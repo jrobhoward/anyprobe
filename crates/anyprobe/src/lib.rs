@@ -144,6 +144,27 @@ pub mod __private {
         f()
     }
 
+    /// A new invocation id for an `async fn` under `#[probe]`, passed as the
+    /// first argument of its probes so a tracer can pair each entry with its
+    /// return when calls interleave. Never 0: an id of 0 on a return or
+    /// unwind probe means the entry probe was off when the call started.
+    #[cold]
+    #[inline(never)]
+    #[must_use]
+    pub fn next_invocation() -> u64 {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Whether this thread is unwinding from a panic, for `#[probe(unwind)]`.
+    /// Called from here so the caller's crate needs no `::std` path.
+    #[inline]
+    #[must_use]
+    pub fn panicking() -> bool {
+        std::thread::panicking()
+    }
+
     /// Encoding selection for arguments `#[probe]` does not list, with the
     /// `autoref` feature: `Serialize`, then `Debug`, then a compile error.
     ///

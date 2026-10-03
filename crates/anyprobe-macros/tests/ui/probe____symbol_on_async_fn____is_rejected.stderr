@@ -1,0 +1,5 @@
+error: `symbol` does not apply to an `async fn`: its symbol only creates the future, and the body runs later, in `poll`
+ --> tests/ui/probe____symbol_on_async_fn____is_rejected.rs:1:35
+  |
+1 | #[anyprobe::probe(provider = "t", symbol)]
+  |                                   ^^^^^^

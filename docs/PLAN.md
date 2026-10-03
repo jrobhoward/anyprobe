@@ -214,7 +214,7 @@ For raw uprobes / DTrace `pid` provider / Frida use without USDT:
    Windows, no-op elsewhere (FreeBSD included). Design below.
 2. `#[probe]` for sync fns: naming, `native`/`serde`/`debug`/`skip`, `ret`,
    compile-error diagnostics; `autoref` feature.
-3. `async fn`, `unwind`, `symbol`.
+3. `async fn`, `unwind`, `symbol`. Design and status below.
 4. Tooling.
 5. CI matrix:
    - Linux: privileged bpftrace
@@ -540,6 +540,115 @@ Checked on the macOS host (Apple Silicon, macOS 27), with
   bpftrace's own 64-byte default cuts long before 4096.
 - Payload cap is a constant. Configurable at runtime costs a load in the cold
   path only; not done until someone needs it.
+
+## Phase 3: `async fn`, `unwind`, `symbol`
+
+Supersedes the sketches under "Async fns" and "Opt-in extensions" above.
+
+### `async fn`
+
+```rust
+#[anyprobe::probe(ret = native)]
+async fn fetch(id: u64, path: &str) -> u64 { body }
+// becomes
+async fn fetch(id: u64, path: &str) -> u64 {
+    mod __anyprobe { /* probes and helpers, as for a sync fn */ }
+    let __anyprobe_invocation: u64 = if __anyprobe::__anyprobe_entry::enabled() {
+        let __anyprobe_invocation = ::anyprobe::__private::next_invocation();
+        __anyprobe::fire_entry(__anyprobe_invocation, id, path);
+        __anyprobe_invocation
+    } else {
+        0
+    };
+    let __anyprobe_ret = async move {
+        if false { let __anyprobe_never: u64 = loop {}; return __anyprobe_never; }
+        body
+    }
+    .await;
+    if __anyprobe::__anyprobe_return::enabled() {
+        __anyprobe::fire_return(__anyprobe_invocation, __anyprobe_ret);
+    }
+    __anyprobe_ret
+}
+```
+
+- No future wrapper type. The signature stays an `async fn`, so `Send`,
+  lifetimes and `async fn` in traits behave as before; the checks are
+  ordinary statements in the body, which runs at the first poll.
+- The body is an `async move` block so that its `return`s end the block, not
+  the function. An async block takes its output type from its first
+  `return`, unlike an `async fn`, which takes the declared type: a body that
+  returns `Box::new(1u8)` and then `Box::new("s")` from a function declared
+  `-> Box<dyn Debug>` fails to compile in a plain block. The unreachable
+  `return` first pins the declared type, so the others coerce, as
+  `tracing`'s `#[instrument]` does. Neither a pass-through helper with a
+  `Future<Output = R>` bound nor an async closure with `-> R` declared
+  fixes this (both tried, on 1.88 and 1.99). `impl Trait` cannot be written
+  there; the type is then inferred.
+- Invocation id: a global `AtomicU64` from 1, drawn only when the entry
+  probe is on, passed as the first value of the entry, return and unwind
+  probes. It takes one of the six values, so a probe collapses one argument
+  sooner than its sync equivalent. A return with id 0 started while the
+  entry probe was off.
+- `poll` / `pending` probes from the sketch are not done: they need a
+  wrapper future, and no one has asked for scheduling latency yet.
+
+### `unwind`
+
+A guard created after the entry check and `mem::forget`ten after the body
+returns, so the normal path runs no drop code. Its `Drop` checks the unwind
+probe and fires it. Sync: `{name}__unwind()`, only reachable by a panic.
+Async: `{name}__unwind(invocation, panicking)`, also when the future is
+dropped before completion; `panicking` tells the two apart.
+`std::thread::panicking` is reached through `anyprobe::__private`, so the
+caller's crate needs no `::std` path.
+
+### `symbol`
+
+`#[inline(never)]` and `#[unsafe(export_name = "...")]` on the function;
+the name is `{provider}__{name}` unless given, and must be ASCII letters,
+digits, `_`, `.` and `$`. Rejected by the attribute: `async fn` (the symbol
+only creates the future), functions generic over types or consts including
+`impl Trait` arguments, and functions already carrying `#[inline]`,
+`#[no_mangle]` or `#[export_name]`. rustc itself rejects methods of generic
+`impl` blocks ("functions generic over types or consts must be mangled"),
+which the attribute cannot see. Methods in trait impls are allowed (rustc
+accepts them), unlike the sketch.
+
+### Status (2026-10-03)
+
+Checked on the macOS host:
+
+- `tests/probe_async.rs`: async shapes (native arguments and return, `?`
+  into a boxed error, returns of different types coercing to `Box<dyn ..>`,
+  borrowed and elided-lifetime returns, `impl Trait`, generics, by-value
+  arguments, early `return` of `()`, collapsed arguments, `&mut self` and
+  `self` methods, a trait impl), `Send` futures, a future dropped mid-await,
+  `unwind` on panicking sync and async functions (the panic still
+  propagates), and `symbol` called through both exported names. Expansion
+  shape tests in `anyprobe-macros/src/attr_tests.rs`; six new compile-fail
+  cases.
+- `attr_async` example: every site rewritten and inside its function,
+  arm64 and x86_64, release and release-lto; the unwind checks of the
+  cancelled future sit in its drop glue; `_attr_async__exported` is a
+  global text symbol.
+- `sudo dtrace -c` with SIP on, release and release-lto, 20 iterations
+  (`spike/scripts/attach-macos-attr.sh`): 40 `fetch` entries and 40
+  returns, every return paired with its entry by a unique non-zero
+  invocation id and carrying the matching value, with the second call of
+  each pair returning first; the cancelled `slow` fired its unwind probe 20
+  times with `panicking` 0 and its entry's invocation id, and its return
+  probe never; `may_panic` fired entry 20, return 10 and unwind 10 times;
+  `exported` was read with ids 0 to 19 both by its USDT probe and by the
+  `pid` provider through the symbol `attr_async__exported`. The script's awk
+  checks were also tested on simulated broken output.
+
+Not yet:
+
+- Linux and Windows: the `attr_async` example is not in
+  `attach-linux-attr.sh` or `attach-windows-attr.ps1`. On Linux, `symbol` is
+  for `uprobe:BIN:attr_async__exported`; on Windows it is only a symbol name
+  for debuggers.
 
 ## FreeBSD (deferred)
 

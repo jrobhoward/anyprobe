@@ -1,11 +1,15 @@
 //! `#[probe]`: parsing, validation and expansion.
 //!
-//! The attribute wraps a function in an entry probe and a return probe. Both
-//! are ordinary `define_probe!` modules, defined inside the function body so
-//! that they need no names from outside it, next to two `#[cold]` helpers
-//! that encode the arguments and fire. The function itself gains two enabled
-//! checks and runs its original body through `call_once` to capture the
-//! return value.
+//! The attribute wraps a function in an entry probe and a return probe, and
+//! with `unwind` an unwind probe. Each is an ordinary `define_probe!` module,
+//! defined inside the function body so that it needs no names from outside
+//! it, next to a `#[cold]` helper that encodes the arguments and fires. The
+//! function itself gains the enabled checks and runs its original body as a
+//! closure (`call_once`), or for an `async fn` as an awaited `async` block,
+//! to capture the return value.
+//!
+//! An `async fn` passes an invocation id as the first argument of each probe,
+//! so a tracer can pair entries and returns of calls that interleave.
 
 use std::collections::HashMap;
 
@@ -13,7 +17,7 @@ use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::{format_ident, quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::spanned::Spanned;
-use syn::{AttrStyle, FnArg, Ident, ItemFn, LitStr, Pat, ReturnType, Type};
+use syn::{AttrStyle, FnArg, GenericParam, Ident, ItemFn, LitStr, Pat, ReturnType, Token, Type};
 
 use crate::args::{self, Kind};
 use crate::names;
@@ -46,10 +50,14 @@ struct Options {
     /// Argument name to its listed mode and where it was listed.
     modes: HashMap<String, (Mode, Span)>,
     ret: Option<(Mode, Span)>,
+    /// Where `unwind` was given.
+    unwind: Option<Span>,
+    /// `symbol`, with its name if one was given, and where it was given.
+    symbol: Option<(Option<LitStr>, Span)>,
 }
 
-const OPTIONS: &str =
-    "expected `name`, `provider`, `serde(..)`, `debug(..)`, `skip(..)`, `native(..)` or `ret`";
+const OPTIONS: &str = "expected `name`, `provider`, `serde(..)`, `debug(..)`, `skip(..)`, \
+     `native(..)`, `ret`, `unwind` or `symbol`";
 
 fn parse_options(attr: TokenStream) -> syn::Result<Options> {
     let mut options = Options::default();
@@ -108,8 +116,24 @@ fn parse_options(attr: TokenStream) -> syn::Result<Options> {
             options.ret = Some((mode, value.span()));
             return Ok(());
         }
-        if path.is_ident("unwind") || path.is_ident("symbol") {
-            return Err(meta.error("`unwind` and `symbol` are not implemented yet"));
+        if path.is_ident("unwind") {
+            if options.unwind.is_some() {
+                return Err(meta.error("given twice"));
+            }
+            options.unwind = Some(path.span());
+            return Ok(());
+        }
+        if path.is_ident("symbol") {
+            if options.symbol.is_some() {
+                return Err(meta.error("given twice"));
+            }
+            let name = if meta.input.peek(Token![=]) {
+                Some(meta.value()?.parse()?)
+            } else {
+                None
+            };
+            options.symbol = Some((name, path.span()));
+            return Ok(());
         }
         Err(meta.error(format!("unknown option; {OPTIONS}")))
     });
@@ -159,7 +183,8 @@ enum Shape {
 
 fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let mut options = parse_options(attr)?;
-    check_signature(&func)?;
+    check_signature(&func, &options)?;
+    let is_async = func.sig.asyncness.is_some();
 
     let crate_name = std::env::var("CARGO_CRATE_NAME").ok();
     let provider = probes::provider_name(options.provider.as_ref(), crate_name.as_deref())?;
@@ -169,7 +194,12 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     };
     let entry_name = format!("{base}__entry");
     let return_name = format!("{base}__return");
-    for name in [&entry_name, &return_name] {
+    let unwind_name = format!("{base}__unwind");
+    let mut checked = vec![&entry_name, &return_name];
+    if options.unwind.is_some() {
+        checked.push(&unwind_name);
+    }
+    for name in checked {
         names::check_probe(name).map_err(|msg| {
             let hint = if options.name.is_none() {
                 "; set a shorter one with `name = \"...\"`"
@@ -179,25 +209,40 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
             syn::Error::new(base_span, format!("{msg}{hint}"))
         })?;
     }
+    let symbol = symbol_name(&options, &provider, &base)?;
 
     let passed = collect_args(&func, &mut options)?;
     let ret = return_shape(&func, options.ret)?;
 
-    let operands: usize = passed
-        .iter()
-        .map(|p| match &p.shape {
-            Shape::Native { kind, .. } => kind.sdt_sizes().len(),
-            Shape::Encoded { .. } => 2,
-        })
-        .sum();
+    // The invocation id of an `async fn` takes one operand of its own.
+    let operands: usize = usize::from(is_async)
+        + passed
+            .iter()
+            .map(|p| match &p.shape {
+                Shape::Native { kind, .. } => kind.sdt_sizes().len(),
+                Shape::Encoded { .. } => 2,
+            })
+            .sum::<usize>();
     let collapse = operands > MAX_OPERANDS;
 
     let entry_ident = format_ident!("__anyprobe_entry");
     let return_ident = format_ident!("__anyprobe_return");
-    let (entry_probe, entry_helper, entry_call) =
-        entry_parts(&provider, &entry_name, &entry_ident, &passed, collapse);
+    let unwind_ident = format_ident!("__anyprobe_unwind");
+    let (entry_probe, entry_helper, entry_call) = entry_parts(
+        &provider,
+        &entry_name,
+        &entry_ident,
+        &passed,
+        collapse,
+        is_async,
+    );
     let (return_probe, return_helper, return_call) =
-        return_parts(&provider, &return_name, &return_ident, ret);
+        return_parts(&provider, &return_name, &return_ident, ret, is_async);
+    let (unwind_probe, unwind_helper) = if options.unwind.is_some() {
+        unwind_parts(&provider, &unwind_name, &unwind_ident, is_async)
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
 
     // Inner attributes of the body (`#![allow(..)]`) move onto the function,
     // where they apply to the same code.
@@ -211,15 +256,9 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
         block,
     } = &func;
 
-    // The closure is annotated with the return type so that `?` in the body
-    // converts errors as it does in the function. `impl Trait` cannot be
-    // written there; the type is then inferred.
-    let ret_annotation = match &sig.output {
-        ReturnType::Type(arrow, ty) if !contains_impl(ty) => quote!(#arrow #ty),
-        _ => TokenStream::new(),
-    };
     // An `unsafe fn` body may call unsafe code directly (before edition
-    // 2024); inside a closure that needs an `unsafe` block.
+    // 2024); inside a closure or an `async` block that needs an `unsafe`
+    // block.
     let body = if sig.unsafety.is_some() {
         quote!({ unsafe #block })
     } else {
@@ -227,8 +266,89 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     };
     let private = quote!(::anyprobe::__private);
 
+    // With `unwind`, a guard that fires the unwind probe if it is dropped
+    // before the body returns: a panic, or for an `async fn` the future
+    // dropped before completion. On return it is forgotten, so the normal
+    // path runs no drop code.
+    let (guard, disarm) = match (options.unwind.is_some(), is_async) {
+        (false, _) => (TokenStream::new(), TokenStream::new()),
+        (true, false) => (quote!(let __anyprobe_guard = __anyprobe::Guard;), forget()),
+        (true, true) => (
+            quote!(let __anyprobe_guard = __anyprobe::Guard(__anyprobe_invocation);),
+            forget(),
+        ),
+    };
+
+    let run = if is_async {
+        // The entry probe fires at the first poll, which is when an `async
+        // fn` body starts. The invocation id is drawn only if it is on.
+        let start = quote! {
+            let __anyprobe_invocation: u64 = if __anyprobe::#entry_ident::enabled() {
+                let __anyprobe_invocation = #private::next_invocation();
+                #entry_call
+                __anyprobe_invocation
+            } else {
+                0
+            };
+        };
+        // The body runs in an `async move` block, awaited here, so that its
+        // `return`s end the block rather than skip the return probe. A block
+        // takes its output type from its first `return`; the unreachable one
+        // first pins it to the declared type, so later `return`s coerce to it
+        // (`Box<u8>` to `Box<dyn Debug>`) as they would in the `async fn`.
+        // `impl Trait` cannot be written there; the type is then inferred.
+        let pin = match &sig.output {
+            ReturnType::Type(_, ty) if !contains_impl(ty) => quote! {
+                #[allow(unreachable_code, clippy::empty_loop, clippy::diverging_sub_expression)]
+                if false {
+                    let __anyprobe_never: #ty = loop {};
+                    return __anyprobe_never;
+                }
+            },
+            _ => TokenStream::new(),
+        };
+        quote! {
+            #start
+            #guard
+            let __anyprobe_ret = async move {
+                #pin
+                #body
+            }
+            .await;
+            #disarm
+        }
+    } else {
+        // The closure is annotated with the return type so that `?` in the
+        // body converts errors as it does in the function. `impl Trait`
+        // cannot be written there; the type is then inferred.
+        let ret_annotation = match &sig.output {
+            ReturnType::Type(arrow, ty) if !contains_impl(ty) => quote!(#arrow #ty),
+            _ => TokenStream::new(),
+        };
+        quote! {
+            if __anyprobe::#entry_ident::enabled() {
+                #entry_call
+            }
+            #guard
+            #[allow(unused_unsafe, clippy::redundant_closure_call)]
+            let __anyprobe_ret = #private::call_once(move || #ret_annotation #body);
+            #disarm
+        }
+    };
+
+    // `symbol`: a stable, unmangled symbol for raw uprobes and DTrace's `pid`
+    // provider, and `inline(never)` so that the symbol is where the code
+    // runs.
+    let symbol_attrs = symbol.map(|name| {
+        quote! {
+            #[inline(never)]
+            #[unsafe(export_name = #name)]
+        }
+    });
+
     Ok(quote! {
         #(#attrs)*
+        #symbol_attrs
         #vis #sig {
             #[doc(hidden)]
             #[allow(
@@ -243,14 +363,12 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
             mod __anyprobe {
                 #entry_probe
                 #return_probe
+                #unwind_probe
                 #entry_helper
                 #return_helper
+                #unwind_helper
             }
-            if __anyprobe::#entry_ident::enabled() {
-                #entry_call
-            }
-            #[allow(unused_unsafe, clippy::redundant_closure_call)]
-            let __anyprobe_ret = #private::call_once(move || #ret_annotation #body);
+            #run
             if __anyprobe::#return_ident::enabled() {
                 #return_call
             }
@@ -259,7 +377,42 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     })
 }
 
-fn check_signature(func: &ItemFn) -> syn::Result<()> {
+/// Forgets the unwind guard once the body has returned.
+fn forget() -> TokenStream {
+    quote! {
+        #[allow(clippy::mem_forget)]
+        ::core::mem::forget(__anyprobe_guard);
+    }
+}
+
+/// The `symbol` name, if `symbol` was given: the one given, or
+/// `{provider}__{base}`.
+fn symbol_name(options: &Options, provider: &str, base: &str) -> syn::Result<Option<LitStr>> {
+    let Some((given, span)) = &options.symbol else {
+        return Ok(None);
+    };
+    let (name, span) = match given {
+        Some(lit) => (lit.value(), lit.span()),
+        None => (format!("{provider}__{base}"), *span),
+    };
+    let mut chars = name.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'));
+    if !valid {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "symbol `{name}` must be ASCII letters, digits, `_`, `.` and `$`, \
+                 starting with a letter or `_`"
+            ),
+        ));
+    }
+    Ok(Some(LitStr::new(&name, span)))
+}
+
+fn check_signature(func: &ItemFn, options: &Options) -> syn::Result<()> {
     let sig = &func.sig;
     let unsupported = |span: Span, what: &str| -> syn::Result<()> {
         Err(syn::Error::new(
@@ -269,9 +422,6 @@ fn check_signature(func: &ItemFn) -> syn::Result<()> {
     };
     if let Some(t) = &sig.constness {
         return unsupported(t.span(), "`const fn`: a probe cannot run at compile time");
-    }
-    if let Some(t) = &sig.asyncness {
-        return unsupported(t.span(), "`async fn` yet");
     }
     if let Some(v) = &sig.variadic {
         return unsupported(v.span(), "variadic functions");
@@ -291,6 +441,45 @@ fn check_signature(func: &ItemFn) -> syn::Result<()> {
             "`#[track_caller]`: the body runs in a closure, which would report its own \
              location rather than the caller's",
         );
+    }
+    if let Some((_, span)) = &options.symbol {
+        let span = *span;
+        if sig.asyncness.is_some() {
+            return Err(syn::Error::new(
+                span,
+                "`symbol` does not apply to an `async fn`: its symbol only creates the \
+                 future, and the body runs later, in `poll`",
+            ));
+        }
+        let generic = sig
+            .generics
+            .params
+            .iter()
+            .any(|p| !matches!(p, GenericParam::Lifetime(_)))
+            || sig.inputs.iter().any(|input| match input {
+                FnArg::Typed(t) => contains_impl(&t.ty),
+                FnArg::Receiver(_) => false,
+            });
+        if generic {
+            return Err(syn::Error::new(
+                span,
+                "`symbol` needs a function that is not generic over types or consts \
+                 (`impl Trait` arguments included): each instantiation would need its \
+                 own symbol",
+            ));
+        }
+        if let Some(attr) = func.attrs.iter().find(|a| {
+            ["inline", "no_mangle", "export_name"]
+                .iter()
+                .any(|n| a.path().is_ident(n))
+                || a.path().is_ident("unsafe")
+        }) {
+            return Err(syn::Error::new(
+                attr.path().span(),
+                "`symbol` sets `#[inline(never)]` and the exported name itself; remove this \
+                 attribute",
+            ));
+        }
     }
     Ok(())
 }
@@ -456,6 +645,16 @@ fn probe(args: Vec<Arg>, module: &Ident) -> Probe {
     }
 }
 
+/// The invocation id argument an `async fn`'s probes pass first.
+fn invocation_arg() -> Arg {
+    Arg {
+        name: format_ident!("__anyprobe_invocation"),
+        field: "invocation".to_owned(),
+        ty: quote!(u64),
+        kind: Kind::Unsigned("u64"),
+    }
+}
+
 fn str_arg(name: Ident, field: String) -> Arg {
     Arg {
         name,
@@ -466,34 +665,56 @@ fn str_arg(name: Ident, field: String) -> Arg {
 }
 
 /// The entry probe's module, its cold helper, and the call to the helper.
+/// With `invocation`, every probe argument list starts with the invocation
+/// id, and the call passes the local `__anyprobe_invocation`.
 fn entry_parts(
     provider: &str,
     name: &str,
     module: &Ident,
     passed: &[Passed],
     collapse: bool,
+    invocation: bool,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let (args, helper, call) = if collapse {
-        entry_collapsed(module, passed)
+        entry_collapsed(module, passed, invocation)
     } else {
-        entry_separate(module, passed)
+        entry_separate(module, passed, invocation)
     };
     (define(provider, name, probe(args, module)), helper, call)
 }
 
+/// The invocation id's probe argument, helper parameter and call argument,
+/// or nothing.
+fn invocation_parts(invocation: bool) -> (Vec<Arg>, TokenStream, TokenStream) {
+    if invocation {
+        (
+            vec![invocation_arg()],
+            quote!(__anyprobe_invocation: u64,),
+            quote!(__anyprobe_invocation,),
+        )
+    } else {
+        (Vec::new(), TokenStream::new(), TokenStream::new())
+    }
+}
+
 /// Every argument in one JSON object, passed as the one `args` string.
-fn entry_collapsed(module: &Ident, passed: &[Passed]) -> (Vec<Arg>, TokenStream, TokenStream) {
+fn entry_collapsed(
+    module: &Ident,
+    passed: &[Passed],
+    invocation: bool,
+) -> (Vec<Arg>, TokenStream, TokenStream) {
     let private = quote!(::anyprobe::__private);
+    let (mut args, inv_param, inv_arg) = invocation_parts(invocation);
     let params = passed.iter().map(|p| &p.param);
     let params_again = params.clone();
     let fields = passed.iter().map(|p| p.field.as_str());
-    let args = format_ident!("args");
+    let object = format_ident!("args");
     let helper = quote! {
         #[cold]
         #[inline(never)]
-        pub fn fire_entry(#(#params: #private::Value<'_>),*) {
-            #private::encode::object([#(#fields),*], [#(#params_again),*], |#args| {
-                #module::fire(#args)
+        pub fn fire_entry(#inv_param #(#params: #private::Value<'_>),*) {
+            #private::encode::object([#(#fields),*], [#(#params_again),*], |#object| {
+                #module::fire(#inv_arg #object)
             });
         }
     };
@@ -501,14 +722,19 @@ fn entry_collapsed(module: &Ident, passed: &[Passed]) -> (Vec<Arg>, TokenStream,
         Shape::Native { kind, expr } => to_value(*kind, expr),
         Shape::Encoded { expr } => expr.clone(),
     });
-    let call = quote!(__anyprobe::fire_entry(#(#values),*););
-    (vec![str_arg(args, "args".to_owned())], helper, call)
+    let call = quote!(__anyprobe::fire_entry(#inv_arg #(#values),*););
+    args.push(str_arg(object, "args".to_owned()));
+    (args, helper, call)
 }
 
 /// Each argument as its own probe argument; encoded ones as strings.
-fn entry_separate(module: &Ident, passed: &[Passed]) -> (Vec<Arg>, TokenStream, TokenStream) {
+fn entry_separate(
+    module: &Ident,
+    passed: &[Passed],
+    invocation: bool,
+) -> (Vec<Arg>, TokenStream, TokenStream) {
     let private = quote!(::anyprobe::__private);
-    let mut args = Vec::new();
+    let (mut args, inv_param, inv_arg) = invocation_parts(invocation);
     let mut helper_params = Vec::new();
     let mut encoded = Vec::new();
     for p in passed {
@@ -532,7 +758,7 @@ fn entry_separate(module: &Ident, passed: &[Passed]) -> (Vec<Arg>, TokenStream, 
         }
     }
     let params = passed.iter().map(|p| &p.param);
-    let fire = quote!(#module::fire(#(#params),*));
+    let fire = quote!(#module::fire(#inv_arg #(#params),*));
     let body = if encoded.is_empty() {
         quote!(#fire;)
     } else {
@@ -541,14 +767,14 @@ fn entry_separate(module: &Ident, passed: &[Passed]) -> (Vec<Arg>, TokenStream, 
     let helper = quote! {
         #[cold]
         #[inline(never)]
-        pub fn fire_entry(#(#helper_params),*) {
+        pub fn fire_entry(#inv_param #(#helper_params),*) {
             #body
         }
     };
     let exprs = passed.iter().map(|p| match &p.shape {
         Shape::Native { expr, .. } | Shape::Encoded { expr } => expr,
     });
-    let call = quote!(__anyprobe::fire_entry(#(#exprs),*););
+    let call = quote!(__anyprobe::fire_entry(#inv_arg #(#exprs),*););
     (args, helper, call)
 }
 
@@ -592,16 +818,24 @@ fn return_shape(func: &ItemFn, ret: Option<(Mode, Span)>) -> syn::Result<Ret> {
 }
 
 /// The return probe's module, its cold helper, and the call to the helper.
+/// With `invocation`, as for [`entry_parts`].
 fn return_parts(
     provider: &str,
     name: &str,
     module: &Ident,
     ret: Ret,
+    invocation: bool,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let private = quote!(::anyprobe::__private);
+    let (mut args, inv_param, inv_arg) = invocation_parts(invocation);
     let r = format_ident!("ret");
-    let (args, param, body, arg) = match ret {
-        Ret::None => (Vec::new(), quote!(), quote!(#module::fire();), quote!()),
+    let (ret_args, param, body, arg) = match ret {
+        Ret::None => (
+            Vec::new(),
+            quote!(),
+            quote!(#module::fire(#inv_arg);),
+            quote!(),
+        ),
         Ret::Native(kind, expr) => {
             let ty = param_type(kind);
             (
@@ -612,26 +846,97 @@ fn return_parts(
                     kind,
                 }],
                 quote!(#r: #ty),
-                quote!(#module::fire(#r);),
+                quote!(#module::fire(#inv_arg #r);),
                 expr,
             )
         }
         Ret::Encoded(expr) => (
             vec![str_arg(r.clone(), "ret".to_owned())],
             quote!(#r: #private::Value<'_>),
-            quote!(#private::encode::text([#r], |[#r]| #module::fire(#r));),
+            quote!(#private::encode::text([#r], |[#r]| #module::fire(#inv_arg #r));),
             expr,
         ),
     };
+    args.extend(ret_args);
     let helper = quote! {
         #[cold]
         #[inline(never)]
-        pub fn fire_return(#param) {
+        pub fn fire_return(#inv_param #param) {
             #body
         }
     };
-    let call = quote!(__anyprobe::fire_return(#arg););
+    let call = quote!(__anyprobe::fire_return(#inv_arg #arg););
     (define(provider, name, probe(args, module)), helper, call)
+}
+
+/// The unwind probe's module, and the guard whose drop fires it.
+///
+/// For a sync fn the guard is only dropped while a panic unwinds, so the
+/// probe takes no arguments. For an `async fn` it is also dropped when the
+/// future is dropped before completion; the probe passes the invocation id
+/// and whether the thread was panicking, which tells the two apart.
+fn unwind_parts(
+    provider: &str,
+    name: &str,
+    module: &Ident,
+    invocation: bool,
+) -> (TokenStream, TokenStream) {
+    let private = quote!(::anyprobe::__private);
+    let (args, guard) = if invocation {
+        let panicking = format_ident!("panicking");
+        (
+            vec![
+                invocation_arg(),
+                Arg {
+                    name: panicking.clone(),
+                    field: "panicking".to_owned(),
+                    ty: quote!(bool),
+                    kind: Kind::Bool,
+                },
+            ],
+            quote! {
+                pub struct Guard(pub u64);
+
+                impl ::core::ops::Drop for Guard {
+                    #[inline]
+                    fn drop(&mut self) {
+                        if #module::enabled() {
+                            fire_unwind(self.0, #private::panicking());
+                        }
+                    }
+                }
+
+                #[cold]
+                #[inline(never)]
+                pub fn fire_unwind(__anyprobe_invocation: u64, #panicking: bool) {
+                    #module::fire(__anyprobe_invocation, #panicking);
+                }
+            },
+        )
+    } else {
+        (
+            Vec::new(),
+            quote! {
+                pub struct Guard;
+
+                impl ::core::ops::Drop for Guard {
+                    #[inline]
+                    fn drop(&mut self) {
+                        if #module::enabled() {
+                            fire_unwind();
+                        }
+                    }
+                }
+
+                #[cold]
+                #[inline(never)]
+                pub fn fire_unwind() {
+                    #module::fire();
+                }
+            },
+        )
+    };
+    (define(provider, name, probe(args, module)), guard)
 }
 
 /// The probe module for `probe`, named `module`, with probe name `name`.

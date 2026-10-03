@@ -1,4 +1,4 @@
-#[anyprobe::probe(provider = "t")]
+#[anyprobe::probe(provider = "t", symbol)]
 async fn handle(id: u64) -> u64 {
     id
 }

@@ -8,6 +8,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `#[probe]` on `async fn`: the entry probe fires when the body starts, the
+  return probe when it completes, and both pass an invocation id first so a
+  tracer can pair them across interleaved calls.
+- `#[probe(unwind)]`: a `{name}__unwind` probe that fires when a panic
+  unwinds through the function, or when an `async fn`'s future is dropped
+  before completing.
+- `#[probe(symbol)]` and `symbol = "..."`: export the function under a
+  stable, unmangled name (`{provider}__{name}` by default), never inlined,
+  for tools that attach by symbol.
 - `#[probe]`: probes a function's entry and return (`name__entry`,
   `name__return`). Options: `name`, `provider`, `serde(..)`, `debug(..)`,
   `skip(..)`, `native(..)` and `ret = native | serde | debug`. Integers,

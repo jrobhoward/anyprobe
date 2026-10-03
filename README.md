@@ -40,6 +40,30 @@ and `&[u8]` are passed as they are. Other arguments are listed in
 `autoref` feature picks an encoding for unlisted arguments instead. Encoding
 runs only while a tracer is attached.
 
+On an `async fn` the entry probe fires when the body starts and the return
+probe when it completes, and both pass an invocation id first, so a tracer
+can pair them when calls interleave. Two options add to what is traced:
+
+```rust
+#[anyprobe::probe(provider = "myapp", unwind)]
+async fn fetch(id: u64) -> u64 {
+    // ...
+    id
+}
+
+#[anyprobe::probe(provider = "myapp", symbol)]
+fn checksum(data: &[u8]) -> u32 {
+    // ...
+    0
+}
+```
+
+`unwind` adds `fetch__unwind(invocation, panicking)`, which fires when a
+panic unwinds through the function or, for an `async fn`, when its future is
+dropped before completing. `symbol` exports `checksum` as `myapp__checksum`,
+never inlined, for tools that attach by symbol: raw uprobes, DTrace's `pid`
+provider.
+
 `probes!` defines probes to fire from anywhere in a function:
 
 ```rust
@@ -97,12 +121,15 @@ bytes, and bpftrace reads 64 by default (`BPFTRACE_MAX_STRLEN`). A native
 
 ## Caveats
 
-- `#[probe]` runs the function's body in a closure to capture the return
-  value. It does not support `async fn` yet, `const fn`, functions that
-  return `!`, or `#[track_caller]`.
+- `#[probe]` runs the function's body in a closure, or an awaited `async`
+  block for an `async fn`, to capture the return value. It does not support
+  `const fn`, functions that return `!`, `#[track_caller]`, or functions
+  that return a future without being `async fn` (`#[async_trait]`).
 - Methods are named after the function, so two methods named `new` share
-  probe names unless one sets `name = "..."`. On macOS two probes with the
-  same name and different argument types conflict.
+  probe names unless one sets `name = "..."`. If their arguments differ,
+  each site still passes its own; with dtrace a script tells them apart by
+  the function it reports (`probefunc`). Nobody has tried this with bpftrace
+  yet.
 
 - macOS: `sudo dtrace` attaches with System Integrity Protection on, for
   binaries that are not signed with the hardened runtime.

@@ -1,4 +1,4 @@
-error: unknown option; expected `name`, `provider`, `serde(..)`, `debug(..)`, `skip(..)`, `native(..)` or `ret`
+error: unknown option; expected `name`, `provider`, `serde(..)`, `debug(..)`, `skip(..)`, `native(..)`, `ret`, `unwind` or `symbol`
  --> tests/ui/probe____unknown_option____is_rejected.rs:1:35
   |
 1 | #[anyprobe::probe(provider = "t", json(x))]

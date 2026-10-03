@@ -109,7 +109,7 @@ spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
 RUSTFLAGS="-C link-arg=-Wl,-z,separate-loadable-segments" \
   CARGO_TARGET_DIR=target/sep-seg spike/scripts/attach-linux-stap.sh
 spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
-spike/scripts/attach-macos-attr.sh       # `#[probe]`, every encoding, same-name probes
+spike/scripts/attach-macos-attr.sh       # `#[probe]`: encodings, same-name, async, unwind, symbol
 sh spike/scripts/attach-freebsd.sh       # deferred: spike only, dtrace -p and -Z -c
 # Windows: elevated Windows PowerShell. Execution policy blocks unsigned
 # scripts by default, so pass Bypass for this one invocation (`pwsh` is not
@@ -191,6 +191,14 @@ call that ends a function compiles to a tail call with no `ret` after it, so
 the rewritten site falls through into whatever function follows.
 `spike/examples/inspect_dof.rs` fails on any site that ends its function; run
 it on a release and a release-lto build after touching the macOS backend.
+
+**An `async fn` body keeps its unreachable typed `return`.** `#[probe]`
+runs the body as an awaited `async move` block, whose output type comes from
+its first `return`, not the declared return type. The generated
+`if false { let __anyprobe_never: T = loop {}; return __anyprobe_never; }`
+pins it, so `return`s of other types coerce as they do in the `async fn`.
+It looks like dead code; removing it breaks bodies that return
+`Box::new(x)` into a `Box<dyn Trait>`. `tests/probe_async.rs` covers it.
 
 **Argument encoding only runs behind the enabled check.** On Linux that check
 is the SDT semaphore; without one, a tracer sees the probe but every call pays
@@ -317,7 +325,8 @@ Before considering any change complete:
   `attach-macos.sh` (sudo) and `attach-windows.ps1` (elevated prompt, with
   `-ExecutionPolicy Bypass`). `#[probe]` has an attach script on Linux
   (`attach-linux-attr.sh`), macOS (`attach-macos-attr.sh`, sudo) and
-  Windows (`attach-windows-attr.ps1`). Run the macOS scripts as yourself, not
+  Windows (`attach-windows-attr.ps1`). Only the macOS script covers `async
+  fn`, `unwind` and `symbol` (the `attr_async` example) so far. Run the macOS scripts as yourself, not
   under `sudo`: they call `sudo` for dtrace only, and cargo run as root
   leaves root-owned files in `target/`
 - `cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe` passes

@@ -1,0 +1,5 @@
+error: `symbol` sets `#[inline(never)]` and the exported name itself; remove this attribute
+ --> tests/ui/probe____symbol_with_inline____is_rejected.rs:2:3
+  |
+2 | #[inline]
+  |   ^^^^^^

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Checks `#[probe]` on macOS: the DOF ld64 built for the anyprobe `attr` and
-# `same_name` examples, then what dtrace reads from each encoding.
+# Checks `#[probe]` on macOS: the DOF ld64 built for the anyprobe `attr`,
+# `same_name` and `attr_async` examples, then what dtrace reads from each
+# encoding, from `async fn`, from `unwind`, and through `symbol`.
 #
 # Usage: spike/scripts/attach-macos-attr.sh [PROFILE...]
 #   PROFILE defaults to "release release-lto".
@@ -22,7 +23,15 @@
 #     value reads as `Ok(5)` 10 times and `Err("odd N")` 10 times;
 #   - for `same_name`, dtrace reads each function's arguments as that
 #     function declares them, 20 times each, and `new__return` fires 60
-#     times.
+#     times;
+#   - for `attr_async` (20 iterations, two interleaved `fetch` calls each):
+#     every `fetch` return pairs with its entry by invocation id (unique, not
+#     0) and carries `id * 10 + path.len()`, and the second call of each pair
+#     returns first; the cancelled `slow` fires its unwind probe 20 times
+#     with `panicking` 0 and the entry's invocation id, and its return probe
+#     never; `may_panic` fires entry 20 times, return 10 and unwind 10; and
+#     `exported` is reached both by its USDT probe and, through its
+#     `symbol`, by the `pid` provider, 20 times each with ids 0 to 19.
 # Encoding runs only after the enabled check, so any encoded value read
 # shows that attaching turned the check on. Works with SIP on. Prints ok/FAIL
 # per check and exits non-zero if any check failed.
@@ -65,9 +74,10 @@ cargo build -q -p anyprobe-spike --example inspect_dof || exit 2
 inspect="target/debug/examples/inspect_dof"
 
 for profile in "$@"; do
-  echo "== ${target:-$host} $profile (anyprobe examples attr, same_name)"
+  echo "== ${target:-$host} $profile (anyprobe examples attr, same_name, attr_async)"
   profile_failed=0
-  build=(cargo build -q -p anyprobe --example attr --example same_name --profile "$profile")
+  build=(cargo build -q -p anyprobe --example attr --example same_name --example attr_async \
+    --profile "$profile")
   dir="target/$profile/examples"
   if [ -n "$target" ]; then
     build+=(--target "$target")
@@ -80,6 +90,7 @@ for profile in "$@"; do
   fi
   attr="$dir/attr"
   same="$dir/same_name"
+  async="$dir/attr_async"
 
   "$inspect" "$attr" >"$work/attr.dof" 2>&1
   expect "attr: every site rewritten and inside its function" test $? -eq 0
@@ -87,6 +98,10 @@ for profile in "$@"; do
   expect "same_name: every site rewritten and inside its function" test $? -eq 0
   expect "same_name: one new-entry probe site per function" \
     test "$(grep -cE ':new-entry sites=1 ' "$work/same.dof")" -eq 3
+  "$inspect" "$async" >"$work/async.dof" 2>&1
+  expect "attr_async: every site rewritten and inside its function" test $? -eq 0
+  expect "attr_async: symbol exported as attr_async__exported" \
+    bash -c "nm '$async' | grep -qE ' T _attr_async__exported\$'"
 
   if [ "$attach" != 0 ]; then
     out="$work/attr.dtrace"
@@ -141,11 +156,62 @@ for profile in "$@"; do
     expect "same_name: new__return fires for all three" lines 1 "^new-return $((3 * n))$" "$sout"
     expect "same_name: nothing unexpected" test -z "$(grep -vE \
       "^(foo-entry|other-entry|new-return) |^bar-entry\$|^done |^\$|$sip" "$sout")"
+
+    aout="$work/async.dtrace"
+    sudo dtrace -q -c "$async $iterations 20" -n '
+      attr_async$target:::fetch-entry {
+        printf("fetch-entry %d %d %s\n", arg0, arg1, copyinstr(arg2, arg3));
+      }
+      attr_async$target:::fetch-return { printf("fetch-return %d %d\n", arg0, arg1); }
+      attr_async$target:::slow-entry { printf("slow-entry %d %d\n", arg0, arg1); }
+      attr_async$target:::slow-return { printf("slow-return %d\n", arg0); }
+      attr_async$target:::slow-unwind { printf("slow-unwind %d %d\n", arg0, arg1); }
+      attr_async$target:::may_panic-entry { printf("may_panic-entry %d\n", arg0); }
+      attr_async$target:::may_panic-return { printf("may_panic-return\n"); }
+      attr_async$target:::may_panic-unwind { printf("may_panic-unwind\n"); }
+      attr_async$target:::exported-entry { printf("exported-entry %d\n", arg0); }
+      pid$target::attr_async__exported:entry { printf("exported-pid %d\n", arg0); }' \
+      >"$aout" 2>&1
+    ids="$(seq 0 $((n - 1)) | tr '\n' ' ')"
+    expect "attr_async: fetch entry fires twice per iteration" lines $((2 * n)) '^fetch-entry ' "$aout"
+    expect "attr_async: fetch return fires twice per iteration" lines $((2 * n)) '^fetch-return ' "$aout"
+    # Pairs each return with its entry by invocation id, checks the value,
+    # and checks that the second call of each pair (odd id) returned first.
+    pairing=$(awk '
+      /^fetch-entry / {
+        if ($2 == 0 || ($2 in id)) bad = "invocation id 0 or reused"
+        id[$2] = $3; len[$2] = length($4)
+      }
+      /^fetch-return / {
+        k = returns++
+        if (!($2 in id)) { bad = "return with no matching entry"; next }
+        if ($3 != id[$2] * 10 + len[$2]) bad = "return value does not match its entry"
+        if (id[$2] != (k % 2 == 0 ? k + 1 : k - 1)) bad = "returns not in the interleaved order"
+      }
+      END { print (bad == "" ? "ok" : bad) }' "$aout")
+    expect "attr_async: fetch returns pair with their entries ($pairing)" test "$pairing" = ok
+    expect "attr_async: cancelled slow never returns" lines 0 '^slow-return ' "$aout"
+    unwound=$(awk '
+      /^slow-entry / { started[$2] = 1 }
+      /^slow-unwind / { if (($2 in started) && $3 == 0) n++ }
+      END { print n + 0 }' "$aout")
+    expect "attr_async: cancelled slow unwinds, not panicking, with its invocation id" \
+      test "$unwound" -eq "$n"
+    expect "attr_async: may_panic entry" lines "$n" '^may_panic-entry ' "$aout"
+    expect "attr_async: may_panic returns for even ids" lines $((n / 2)) '^may_panic-return$' "$aout"
+    expect "attr_async: may_panic unwinds for odd ids" lines $((n / 2)) '^may_panic-unwind$' "$aout"
+    expect "attr_async: exported's USDT probe reads its id" \
+      test "$(sed -n 's/^exported-entry //p' "$aout" | sort -n | tr '\n' ' ')" = "$ids"
+    expect "attr_async: pid provider reaches exported by its symbol" \
+      test "$(sed -n 's/^exported-pid //p' "$aout" | sort -n | tr '\n' ' ')" = "$ids"
+    expect "attr_async: nothing unexpected" test -z "$(grep -vE \
+      "^(fetch-entry|fetch-return|slow-entry|slow-unwind|may_panic-entry|exported-entry|exported-pid) |^may_panic-(return|unwind)\$|^done |^\$|$sip" \
+      "$aout")"
   fi
 
   if [ "$profile_failed" -ne 0 ]; then
     failed=1
-    for f in attr.dof same.dof attr.dtrace same.dtrace; do
+    for f in attr.dof same.dof async.dof attr.dtrace same.dtrace async.dtrace; do
       [ -f "$work/$f" ] && { echo "  --- $f (first 40 lines)"; head -40 "$work/$f"; }
     done
   fi

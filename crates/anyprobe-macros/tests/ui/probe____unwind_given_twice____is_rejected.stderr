@@ -1,0 +1,5 @@
+error: given twice
+ --> tests/ui/probe____unwind_given_twice____is_rejected.rs:1:43
+  |
+1 | #[anyprobe::probe(provider = "t", unwind, unwind)]
+  |                                           ^^^^^^

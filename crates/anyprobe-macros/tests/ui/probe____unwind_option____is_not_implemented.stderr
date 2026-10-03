@@ -1,5 +1,0 @@
-error: `unwind` and `symbol` are not implemented yet
- --> tests/ui/probe____unwind_option____is_not_implemented.rs:1:35
-  |
-1 | #[anyprobe::probe(provider = "t", unwind)]
-  |                                   ^^^^^^

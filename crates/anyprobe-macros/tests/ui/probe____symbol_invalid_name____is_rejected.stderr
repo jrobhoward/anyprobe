@@ -1,0 +1,5 @@
+error: symbol `my-symbol` must be ASCII letters, digits, `_`, `.` and `$`, starting with a letter or `_`
+ --> tests/ui/probe____symbol_invalid_name____is_rejected.rs:1:44
+  |
+1 | #[anyprobe::probe(provider = "t", symbol = "my-symbol")]
+  |                                            ^^^^^^^^^^^
