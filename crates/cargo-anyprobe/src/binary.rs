@@ -76,7 +76,7 @@ pub fn read(path: &Path, arch: Option<&str>) -> Result<Binary, Error> {
             let (registry, sites) = read_macho(&macho).map_err(format_error)?;
             ("Mach-O", registry, Some(sites))
         }
-        Object::PE(pe) => ("PE", read_pe(&pe, &bytes), None),
+        Object::PE(pe) => ("PE", read_pe(&pe, &bytes).map_err(format_error)?, None),
         _ => {
             return Err(format_error(
                 "not an executable or shared library (ELF, Mach-O or PE)".to_owned(),
@@ -161,16 +161,25 @@ fn read_macho(macho: &MachO<'_>) -> Result<Read, String> {
 
 /// The `.aprobe` section. The file holds it padded to the file alignment
 /// with zeros, which the registry parser skips.
-fn read_pe(pe: &PE<'_>, bytes: &[u8]) -> Vec<u8> {
+fn read_pe(pe: &PE<'_>, bytes: &[u8]) -> Result<Vec<u8>, String> {
     for section in &pe.sections {
         if section.name().ok() == Some(".aprobe") {
-            let start = section.pointer_to_raw_data as usize;
-            let len = section.size_of_raw_data.min(section.virtual_size) as usize;
-            return bytes
-                .get(start..start.saturating_add(len))
-                .unwrap_or_default()
-                .to_vec();
+            let len = section.size_of_raw_data.min(section.virtual_size);
+            return raw_range(bytes, section.pointer_to_raw_data, len)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| ".aprobe section is past the end of the file".to_owned());
         }
     }
-    Vec::new()
+    Ok(Vec::new())
 }
+
+/// `len` bytes of `bytes` from `start`, or `None` if they are not all there.
+fn raw_range(bytes: &[u8], start: u32, len: u32) -> Option<&[u8]> {
+    let start = usize::try_from(start).ok()?;
+    let end = start.checked_add(usize::try_from(len).ok()?)?;
+    bytes.get(start..end)
+}
+
+#[cfg(test)]
+#[path = "binary_tests.rs"]
+mod binary_tests;

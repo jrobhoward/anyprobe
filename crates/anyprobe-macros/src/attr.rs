@@ -308,6 +308,8 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
         // `impl Trait` cannot be written there; the type is then inferred.
         let pin = match &sig.output {
             ReturnType::Type(_, ty) if !contains_impl(ty) => quote! {
+                // The `if false` and its `loop {}` are dead on purpose: they
+                // only name the type, so the caller's lints are told so.
                 #[allow(unreachable_code, clippy::empty_loop, clippy::diverging_sub_expression)]
                 if false {
                     let __anyprobe_never: #ty = loop {};
@@ -339,6 +341,8 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
                 #entry_call
             }
             #guard
+            // The body moves into a closure that is called once; in the
+            // caller's crate that can trip these two on code the caller wrote.
             #[allow(unused_unsafe, clippy::redundant_closure_call)]
             let __anyprobe_ret = #private::call_once(move || #ret_annotation #body);
             #disarm
@@ -359,6 +363,9 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
         #(#attrs)*
         #symbol_attrs
         #vis #sig {
+            // Generated, so the caller's documentation, naming and style
+            // lints do not apply to it (probe modules are lower-case names
+            // with `__` in them).
             #[doc(hidden)]
             #[allow(
                 dead_code,
@@ -389,6 +396,8 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
 /// Forgets the unwind guard once the body has returned.
 fn forget() -> TokenStream {
     quote! {
+        // Forgetting is the point: the guard's `Drop` is the unwind probe,
+        // and it must not run on a normal return.
         #[allow(clippy::mem_forget)]
         ::core::mem::forget(__anyprobe_guard);
     }

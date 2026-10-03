@@ -169,6 +169,9 @@ check against.
   `RUSTFLAGS="--cfg anyprobe_dylib"`, which makes each enabled check slightly
   slower.
 
+The full list of limitations is in
+[docs/GAPS.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/GAPS.md).
+
 ## License
 
 Licensed under either of

@@ -188,3 +188,27 @@ fn not_a_binary____fails_with_the_reason() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.starts_with("error: "), "{stderr}");
 }
+
+#[test]
+fn list____binary_cut_in_half____fails_instead_of_listing_nothing() {
+    if !listed() {
+        return;
+    }
+    call_all();
+    let exe = std::env::current_exe().unwrap();
+    let bytes = std::fs::read(&exe).unwrap();
+    let cut = std::env::temp_dir().join(format!("anyprobe-cut-{}.bin", std::process::id()));
+    std::fs::write(&cut, &bytes[..bytes.len() / 2]).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cargo-anyprobe"))
+        .args(["anyprobe", "list"])
+        .arg(&cut)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&cut);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a truncated binary must be an error");
+    assert!(
+        stderr.starts_with("error:") && stderr.contains("cut"),
+        "{stderr}"
+    );
+}

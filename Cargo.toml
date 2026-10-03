@@ -13,6 +13,7 @@ edition = "2024"
 rust-version = "1.88.0"
 license = "MIT OR Apache-2.0"
 authors = ["James Howard <jrobhoward@gmail.com>"]
+repository = "https://github.com/jrobhoward/anyprobe"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "forbid"

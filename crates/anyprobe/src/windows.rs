@@ -39,12 +39,15 @@ pub(crate) fn registry_section() -> &'static [u8] {
 
     let start = START.as_ptr();
     let end = END.as_ptr();
+    // `saturating_sub`: markers the linker left out of order give an empty
+    // slice, not an overflow.
+    let len = (end as usize).saturating_sub(start as usize);
     // SAFETY: the linker places `.aprobe$a`, every `.aprobe$b` record and
     // `.aprobe$c` in that order in one section, so the bytes between the two
     // markers are the records and any zero padding between them: one
     // allocation of initialized bytes. Every byte belongs to an immutable
     // `static`, never written, and lives for the whole program.
-    unsafe { core::slice::from_raw_parts(start, end as usize - start as usize) }
+    unsafe { core::slice::from_raw_parts(start, len) }
 }
 
 /// Defines one probe's `enabled` and `fire`. Called by `probes!`.
