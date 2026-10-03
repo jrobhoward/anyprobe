@@ -171,12 +171,19 @@ in the `.so`, DOF in the `.dylib` that the dynamic loader registers when the
 library loads, a site table in a FreeBSD `.so` that the library's own
 constructor registers, and an ETW provider in the DLL that unregisters when
 it unloads. Tracers attach to the library's file (`usdt:/path/lib.so:...`)
-or to a process that loaded it. On FreeBSD a `cdylib` loaded with `dlopen`
-has been traced alongside the executable, both using one provider name, and
-its probes went away at `dlclose` when it had a provider of its own (see
-[Shared providers outlive `dlclose`](#shared-providers-outlive-dlclose)).
-Nobody has run a tracer against a probe in a shared library on the other
-platforms yet. `anyprobe::list()` called from the library lists the
+or to a process that loaded it.
+
+A `cdylib` loaded with `dlopen` has been traced on Linux (bpftrace -p) and
+FreeBSD (dtrace). On FreeBSD it was traced alongside the executable, both
+using one provider name, and its probes went away at `dlclose` when it had a
+provider of its own (see [Shared providers outlive
+`dlclose`](#shared-providers-outlive-dlclose)). On Linux, bpftrace 0.20.2
+cannot attach to a probe name that both the executable and a library in the
+process define: through the executable it reports "Could not resolve symbol",
+through the library "couldn't get argument 1". A probe name that only the
+library defines works. A library that gives its probes a provider name of its
+own avoids both problems. Nobody has traced a probe in a shared library on
+macOS or Windows yet. `anyprobe::list()` called from the library lists the
 library's probes, and `cargo anyprobe` reads the library file like an
 executable.
 
@@ -248,13 +255,18 @@ the tracer's buffers fill, events are dropped rather than the program blocked.
 On Linux, macOS and FreeBSD the kernel writes a breakpoint over each site of a
 traced probe, in the process's own copy of the code page, and on Linux raises
 the probe's semaphore. It removes both when the tracer exits, including when
-the tracer is killed. A site placed wrongly would put the breakpoint in the
-middle of an instruction; the attach checks confirm each site is a `nop`
-(Linux) or a rewritten call (macOS) inside its function, for release and fat
-LTO builds. On FreeBSD the site table holds the address of each site's own
-label, which the assembler places on the instruction. On Windows nothing in
-the code changes: ETW calls the provider's enable callback, which sets a flag
-per probe.
+the tracer is killed: after `kill -9` of bpftrace or `perf record` on Linux,
+and of dtrace on FreeBSD, every site was a `nop` again and the semaphore 0
+(`spike/scripts/check-gaps-linux.sh`, `check-gaps-freebsd.sh`). Nobody has
+checked this on macOS yet. On FreeBSD, killing a `dtrace -p` also kills the
+program; see [Killing `dtrace -p` kills the
+program](#killing-dtrace--p-kills-the-program). A site placed wrongly would
+put the breakpoint in the middle of an instruction; the attach checks confirm
+each site is a `nop` (Linux) or a rewritten call (macOS) inside its function,
+for release and fat LTO builds. On FreeBSD the site table holds the address of
+each site's own label, which the assembler places on the instruction. On
+Windows nothing in the code changes: ETW calls the provider's enable callback,
+which sets a flag per probe.
 
 ## Registry and `cargo anyprobe`
 
@@ -309,6 +321,17 @@ name. `fasttrap` removes a provider only when the last object using it
 unregisters, so until then `dtrace -l` still lists the library's probes. C
 programs behave the same way. A library that may be unloaded can use a
 provider name of its own.
+
+### Killing `dtrace -p` kills the program
+
+`dtrace -p PID` holds the process with ptrace for the whole session. With
+`kern.kill_on_debugger_exit=1`, FreeBSD's default, the kernel kills a traced
+process whose tracer exits without detaching, so `kill -9` on that dtrace
+kills the program too (`check-gaps-freebsd.sh`). `truss -p` does the same;
+nothing in the crate can change it. Ctrl-C detaches normally. A probe
+description that names the process id (`demo1234:::tick`) instead of using
+`-p` and `$target` does not take hold of the process, and killing that
+dtrace leaves the program running with its probes off.
 
 ### Startup work
 

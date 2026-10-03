@@ -106,7 +106,9 @@ checkout returned 2500
 ```
 
 Press Ctrl-C to detach. The demo keeps running, and its probes go back to
-costing one enabled check each.
+costing one enabled check each. Killing a `dtrace -p` with `kill -9` kills the
+demo as well; see
+[GAPS.md](../GAPS.md#killing-dtrace--p-kills-the-program).
 
 A `&str` and an encoded argument each take two argument slots, a pointer and
 a length, so `customer` is `arg1` and `arg2`, and `order` is `arg3` and
