@@ -108,6 +108,14 @@ picking the first that applies: `Native` > `Serialize` > `Debug` > compile error
 - Buffers are thread-local and reused (no per-event allocation); max size
   configurable, with truncation flagged by a `truncated` bit in a flags operand.
 - bpftrace reads strings with a length cap (default 64; `BPFTRACE_MAX_STRLEN`).
+- perf and gdb read a string argument only as NUL-terminated (`+0(%si):string`
+  in `perf probe`, `(char *)$_probe_arg1` in gdb); neither can take a
+  `(ptr, len)` pair. bpftrace (`str(ptr, len)`) and SystemTap
+  (`user_string_n`) can. Proposal, not decided: write a NUL after every
+  `serde`/`debug` payload in the thread-local buffer (one byte, already
+  behind the enabled check), so perf and gdb read encoded args as strings;
+  `len` still excludes it. Native `&str` cannot be terminated without a copy,
+  so docs say which tools read it.
 
 ## Expansion (sync fn)
 
@@ -132,7 +140,7 @@ LLVM duplication each produce another site under the same probe name.
 
 | OS | Probe emission | Enabled check | Registration | Attach with |
 |---|---|---|---|---|
-| Linux | SystemTap SDT v3 notes (`.note.stapsdt`) via `asm!` | SDT semaphore (`.probes`, kernel ≥4.20 ref_ctr) | none | bpftrace, perf, SystemTap |
+| Linux | SystemTap SDT v3 notes (`.note.stapsdt`) via `asm!` | SDT semaphore (`.probes`, kernel ≥4.20 ref_ctr) | none | bpftrace, perf (SystemTap: link flag needed, see Phase 0 results) |
 | macOS | DTrace USDT via linker relocations (`__dtrace_probe$…`, `__dtrace_isenabled$…`) | DTrace is-enabled | none (ld64 builds DOF) | `dtrace` (SIP: `--without dtrace`) |
 | FreeBSD | DOF built from custom sections (usdt "no-linker" approach) | DTrace is-enabled | ioctl to `/dev/dtrace/helper` at startup (ctor) | `dtrace` |
 | Windows | ETW TraceLogging via `tracelogging` crate; one event per probe | provider level/keyword check | `register()` at startup (ctor), unregister at exit | WPR/WPA, PerfView `*myapp`, `tracelog`, DTrace `etw` |
@@ -238,6 +246,18 @@ them generic. `spike/scripts/attach-{linux,macos,freebsd}.sh` and
 | DTrace attaches on macOS with SIP on | Yes, for this (ad-hoc signed, not hardened) binary: `sudo dtrace -c` flipped the is-enabled check and read every string argument. After the tail-call fix, 40 iterations give exactly 40 firings per label, each attributed to the right function, and 160 `work-return` | run by hand on Apple Silicon, macOS 27 |
 | Every macOS site rewritten and inside its function, both architectures | Yes for arm64 and x86_64, release and release-lto | `examples/inspect_dof.rs` checks each site's bytes and its function bounds |
 
+### Settled locally (Linux x86_64 host, 2026-10-02)
+
+| Question | Result | How it was checked |
+|---|---|---|
+| SDT notes in a default dynamic PIE glibc build | Yes, release and release-lto: 3 `work__entry` notes (one per cold helper instantiation), 1 `work__return`, each location a `nop`, semaphores in `.probes`, `.stapsdt.base` present | `readelf -n`, `objdump` at each location |
+| Disabled cost on Linux x86_64 (Threadripper 1950X) | 2.40 ns probed against 1.63 ns baseline: about 0.77 ns for two probes, 0.39 ns each. Was 0.98 ns before the semaphore load moved into `asm!` (below). Same under release-lto | criterion, `work_outlined` vs `baseline` |
+| What the remaining cost is | The register-save prologue, not the checks. One check alone measures identical to baseline: LLVM shrink-wraps the saves into the cold block. With two checks the entry cold block rejoins the hot path, so the saves stay in the entry of every call. Making the return helper a tail call (helper returns the value) did not change that | scratch criterion bench with `entry_only` / `return_only` variants; `objdump` |
+| aarch64 semaphore load assembles and links directly | Yes: `adrp` + `ldrh` with `ADR_PREL_PG_HI21` / `LDST16_ABS_LO12_NC`, no GOT relocation | `--emit=obj` for `aarch64-unknown-linux-gnu`, `readelf -r` |
+| bpftrace `-p` attach on x86_64 | Yes, release and release-lto (bpftrace 0.20.2, kernel 6.8): attaching raised the semaphore inside the process and detaching cleared it; `str(arg1, arg2)` read every label; across about 150 consecutive iterations each label fired exactly once per iteration and `work__return` four times, with partial iterations only at the edges of the window | `spike/scripts/attach-linux.sh` under sudo |
+| perf attach on x86_64 | Yes, release and release-lto (perf 6.8.12), after moving `.stapsdt.base` into the text segment (see below): `perf probe` added all four sites, `perf record -p` raised the semaphore and cleared it on exit, and across 150 consecutive iterations each fired `work__entry` and `work__return` 4 times. bpftrace re-checked after the move, same result as above | `spike/scripts/attach-linux-perf.sh` and `attach-linux.sh` under sudo |
+| SystemTap attach on x86_64 | Only with the binary linked so file offsets equal virtual addresses (`-C link-arg=-Wl,-z,separate-loadable-segments`, about 1-2% larger). Then, release and release-lto: semaphore raised and cleared, `user_string_n($arg2, $arg3)` read every label, 150 consecutive complete iterations. With rust-lld's default layout it fails (below) | `spike/scripts/attach-linux-stap.sh` with SystemTap 5.6 built from source (Ubuntu 24.04's 5.0 cannot build modules for kernel 6.8) |
+
 ### Found by the spike
 
 - macOS probe calls must be emitted inside `asm!`, never as Rust calls. A
@@ -258,6 +278,21 @@ them generic. `spike/scripts/attach-{linux,macos,freebsd}.sh` and
   one byte past the opcode, and rewrites probe calls to `nop; nopl (%rax)` and
   is-enabled calls to `xor %eax, %eax` plus three `nop`s.
 
+- Linux: a plain Rust load of the semaphore goes through the GOT (two
+  dependent loads) whenever the static lives in an rlib, even under fat LTO,
+  because rustc does not mark rlib statics `dso_local` in case the rlib ends
+  up in a dylib. Most probed code lives in libraries, so this is the normal
+  case. `sys/sdt.h` avoids it with hidden-visibility semaphores; Rust cannot
+  declare visibility, so the spike reads the semaphore with an `asm!` load and
+  a `sym` operand (`movzwl sym(%rip)`, `adrp`/`ldrh`), which links directly.
+  Cost, checked with a scratch crate on x86_64: a Rust `dylib` containing
+  the semaphore fails to link (`R_X86_64_PC32 ... recompile with -fPIC`),
+  private static or not, since a `dylib` exports it. Adding `.hidden {sema}`
+  to the `asm!` lets the `dylib` link, but a crate that inlines the check
+  across the `dylib` boundary (`-C prefer-dynamic`) then fails with
+  `undefined hidden symbol`. `cdylib`, `staticlib` and executables link and
+  run with either form. Bevy's `dynamic_linking` dev feature is a real user
+  of `dylib`. Resolved below.
 - Probe sites that pass pointers must be `readonly`, not `nomem`. The tracer
   reads memory through them, and under `nomem` the compiler may sink or drop a
   store to a buffer whose only reader is the probe. rustc warns about it
@@ -268,23 +303,101 @@ them generic. `spike/scripts/attach-{linux,macos,freebsd}.sh` and
 - `criterion` 0.8 builds a C dependency unconditionally, which breaks
   `cargo clippy --all-targets --target ...` for every cross target. The spike
   uses 0.5.
+- perf (6.8) converts an SDT site address to a file offset using the
+  `.stapsdt.base` section's offset, so the result is only right if the base
+  section shares the probe sites' segment. `sys/sdt.h` emits the base as
+  `"aG"` (read-only data); GNU ld gives every segment the same
+  address-to-offset delta, so that never mattered. rust-lld, the default
+  linker on x86_64 Linux, does not: with `"aG"` perf placed every probe
+  0x1000 bytes from its `nop`. In a release build that registered a uprobe at
+  an arbitrary instruction (no events, and a risk to the traced process); in
+  release-lto the kernel refused it with `ENOTSUPP` (524). The semaphore
+  offset was right, since perf converts that through the `.probes` section.
+  bpftrace was unaffected because it converts through the program headers.
+  Fix: emit `.stapsdt.base` as `"axGR"` so it lands in the text segment;
+  perf's computed offsets then match `readelf` for every site in both
+  profiles, each one a `nop`.
+- perf only raises the semaphore if both the kernel (4.20+, uprobe
+  `ref_ctr_offset`) and perf pass it. An older perf lists the probe and
+  records nothing, with no error. Docs should give the minimum versions.
+- SystemTap 5.6 assumes an executable segment's file offsets equal its
+  virtual addresses, which GNU ld provides and lld (rust-lld, the default on
+  x86_64 Linux) does not: lld puts the text segment's file offset 0x1000
+  below its address. SystemTap then registers each probe at its virtual
+  address as if it were a file offset (`registration error (rc -524)`, or a
+  uprobe in the wrong place), and reads the build-id from the wrong address
+  in memory (`Build-id mismatch`), after which it ignores the process. The
+  `.stapsdt.base` move that fixed perf does not help: SystemTap does not use
+  it for this. A library crate cannot change the final link, so the fix is a
+  documented build setting for SystemTap users: link with
+  `-C link-arg=-Wl,-z,separate-loadable-segments` (lld) or with GNU ld.
+  bpftrace, perf and gdb need neither. It affects any lld-linked binary, C
+  included (a `sys/sdt.h` program linked by lld has the same 0x1000 gap).
+  Upstream report drafted in `docs/upstream/systemtap-lld-file-offsets.md`,
+  not yet filed.
+
+  Decided (2026-10-02): bpftrace and perf are the supported, tested Linux
+  tracers; the README names them. SystemTap gets one `docs/GAPS.md` section
+  (the link flag or GNU ld, why, the size cost, the upstream report) and no
+  CI or regular testing, since testing it means building SystemTap from
+  source on current kernels. `attach-linux-stap.sh` stays in `spike/` for
+  re-checking by hand. A Cargo feature or code change cannot help: a library
+  crate does not control the final link (`cargo:rustc-link-arg` from a
+  dependency's build script does not reach other packages' binaries).
+- bpftrace attaches uprobes one at a time, so the sites of one probe go live
+  (and come off) a few milliseconds apart. Total counts over a short window
+  skew by a few iterations per site even when every site is correct. The
+  attach check therefore counts per iteration (arg0 is the iteration number)
+  and allows partial iterations only at the ends of the window. Generated
+  bpftrace scripts and docs should not suggest comparing totals across sites
+  over short windows.
 - Probe names: Linux notes and ETW events use `work__entry` (perf requires C
   identifiers); DTrace shows `work-entry`, which ld64 derives from the same
   `__` spelling, and FreeBSD records spell it that way directly.
 - macOS: unprivileged `dtrace` refuses to start ("DTrace requires additional
   privileges"); `sudo dtrace` works with SIP on for this binary.
 
+### Semaphore load vs Rust `dylib`
+
+The direct `asm!` load saves about 0.1 ns per check on Linux x86_64 but
+breaks `dylib` crates linked dynamically (above). Options:
+
+1. Direct load, with `dylib` documented as unsupported.
+2. Plain Rust load through the GOT everywhere: works for every crate type,
+   about 0.98 ns instead of 0.77 ns for two probes on the Threadripper.
+3. Direct load by default, with an opt-out cfg (e.g. `--cfg anyprobe_got`)
+   for `dylib` users. A Cargo feature would not work: unification would turn
+   it on for every crate in the graph, though only performance would change.
+
+Decided (2026-10-02): option 3, cfg named `anyprobe_dylib`. The spike
+implements it in `spike/src/linux.rs`; with the cfg set, every check is a GOT
+load again (checked with `objdump`). The opt-out is declared in
+`[workspace.lints.rust] unexpected_cfgs`; the published crate will need the
+same declaration in its own manifest or a `build.rs` (`cargo::rustc-check-cfg`)
+so users who set it get no warning.
+
 ### Still open (needs CI or a VM)
 
-- Linux: bpftrace `-p` attach, semaphore increments and decrements, argument
-  reads, on x86_64 and aarch64 (`spike-linux`).
+- Linux aarch64: bpftrace `-p` attach, semaphore, argument reads
+  (`spike-linux`). x86_64 is settled locally.
+- SystemTap rebuild, if the scratch build is gone: download
+  `systemtap-5.6.tar.gz` from sourceware.org; needs `libdw-dev`,
+  `libboost-dev` and the running kernel's headers; then
+  `./configure --prefix=DIR --disable-docs --disable-refdocs
+  --disable-htmldocs --disable-server --without-nss --without-avahi
+  --without-dyninst --without-python2-probes --without-python3-probes
+  --without-java --without-bpf && make -j && make install`, and run the
+  script with `STAP=DIR/bin/stap`.
+- perf on aarch64, and whether `linux-tools` installs on hosted runners.
+  Candidate: an informational `attach-linux-perf.sh` step in `spike-linux`.
 - FreeBSD: `DTRACEHIOC_ADDDOF` registration, `fasttrap` emulation of the
   `xor eax, eax` is-enabled site, argument reads (`spike-freebsd`).
 - Windows: ETW session reaching the provider; events decoded by `tracerpt`
   (`spike-windows`).
 - macOS: whether hosted runners allow `sudo dtrace` (`spike-macos`,
   informational). Local attach is settled.
-- Disabled cost on Linux x86_64/aarch64 and Windows (`spike-bench`).
+- Disabled cost on Linux aarch64 and Windows (`spike-bench`). Linux x86_64
+  is settled locally.
 
 ## Risks
 

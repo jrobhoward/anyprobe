@@ -9,7 +9,7 @@
 //!
 //! Format reference: <https://sourceware.org/systemtap/wiki/UserSpaceProbeImplementation>.
 
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::AtomicU16;
 
 pub(crate) const NAME: &str = "linux-sdt";
 
@@ -32,6 +32,14 @@ static SEMA_WORK_RETURN: AtomicU16 = AtomicU16::new(0);
 /// inlining or monomorphization, assembles to another site rather than a
 /// duplicate symbol. `_.stapsdt.base` is the one named symbol, guarded by
 /// `.ifndef`.
+///
+/// `.stapsdt.base` is executable (`"axGR"`, where `sys/sdt.h` uses `"aG"`) so
+/// that it lands in the same segment as the probe sites. perf turns a site's
+/// address into a file offset using the base section's offset, which is only
+/// right if the two share a segment's address-to-offset delta. GNU ld gives
+/// every segment the same delta, so `"aG"` works there; lld does not, and with
+/// rust-lld (the default linker on x86_64 Linux) perf put every probe 0x1000
+/// bytes from its `nop`.
 ///
 /// Sites are `readonly`, not `nomem`: an attached tracer reads memory through
 /// pointer arguments at the `nop`. Under `nomem` the compiler may sink or drop
@@ -60,7 +68,7 @@ macro_rules! sdt_site {
                 "994: .balign 4",
                 ".popsection",
                 ".ifndef _.stapsdt.base",
-                ".pushsection .stapsdt.base, \"aGR\", \"progbits\", .stapsdt.base, comdat",
+                ".pushsection .stapsdt.base, \"axGR\", \"progbits\", .stapsdt.base, comdat",
                 ".weak _.stapsdt.base",
                 ".hidden _.stapsdt.base",
                 "_.stapsdt.base: .space 1",
@@ -121,6 +129,61 @@ macro_rules! probe_work_return {
     };
 }
 
+/// Reads a semaphore with a direct PC-relative load.
+///
+/// A Rust load of a static from an rlib goes through the GOT, since rustc
+/// cannot rule out the rlib ending up in a dylib where the symbol could be
+/// preempted. That is a second dependent load on every check. `sys/sdt.h`
+/// avoids it with hidden-visibility semaphores; Rust cannot declare
+/// visibility, so the load is written in `asm!` with a `sym` operand, which
+/// the linker resolves directly.
+///
+/// A Rust `dylib` cannot link a direct reference to a symbol it exports, so
+/// `--cfg anyprobe_dylib` switches back to the plain Rust load.
+#[cfg(all(target_arch = "x86_64", not(anyprobe_dylib)))]
+macro_rules! sema_load {
+    ($sema:path) => {{
+        let v: u32;
+        // SAFETY: reads the two bytes of a `static` semaphore, which is valid
+        // for the whole program. Nothing is written.
+        unsafe {
+            core::arch::asm!(
+                "movzwl {sema}(%rip), {v:e}",
+                sema = sym $sema,
+                v = out(reg) v,
+                options(att_syntax, readonly, nostack, preserves_flags)
+            );
+        }
+        v
+    }};
+}
+
+#[cfg(all(target_arch = "aarch64", not(anyprobe_dylib)))]
+macro_rules! sema_load {
+    ($sema:path) => {{
+        let v: u32;
+        // SAFETY: reads the two bytes of a `static` semaphore, which is valid
+        // for the whole program. Nothing is written.
+        unsafe {
+            core::arch::asm!(
+                "adrp {v:x}, {sema}",
+                "ldrh {v:w}, [{v:x}, :lo12:{sema}]",
+                sema = sym $sema,
+                v = out(reg) v,
+                options(readonly, nostack, preserves_flags)
+            );
+        }
+        v
+    }};
+}
+
+#[cfg(anyprobe_dylib)]
+macro_rules! sema_load {
+    ($sema:path) => {
+        $sema.load(core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!("the Linux SDT backend supports x86_64 and aarch64 only");
 
@@ -130,12 +193,12 @@ pub(crate) fn register() -> std::io::Result<()> {
 
 #[inline(always)]
 pub(crate) fn entry_enabled() -> bool {
-    SEMA_WORK_ENTRY.load(Ordering::Relaxed) != 0
+    sema_load!(SEMA_WORK_ENTRY) != 0
 }
 
 #[inline(always)]
 pub(crate) fn return_enabled() -> bool {
-    SEMA_WORK_RETURN.load(Ordering::Relaxed) != 0
+    sema_load!(SEMA_WORK_RETURN) != 0
 }
 
 #[inline(always)]

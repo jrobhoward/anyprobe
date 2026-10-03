@@ -10,8 +10,15 @@
 #   - attaching turned the probe on inside the process (the semaphore), and
 #     detaching turned it off;
 #   - bpftrace read the label from every work__entry site;
-#   - every label fired as often as the others, and work__return fired once
-#     per work__entry, so a site firing extra times shows up.
+#   - each iteration fired every label exactly once and work__return four
+#     times, so a site firing extra times, or not at all, shows up.
+#
+# Counts are per iteration (arg0 is the iteration number for every call in
+# it), not totals. bpftrace attaches one uprobe at a time, so the sites go
+# live a few iterations apart and totals skew by that much at both ends of
+# the window. The check takes the iterations that every site saw in full,
+# requires them to be one unbroken run of at least 100, and allows partial
+# iterations only before or after that run.
 # Prints ok/FAIL per check and exits non-zero if any check failed.
 
 set -uo pipefail
@@ -36,8 +43,7 @@ expect() {
   fi
 }
 
-# Largest minus smallest of the numbers on stdin.
-spread() { sort -n | awk 'NR == 1 { min = $1 } { max = $1 } END { print max - min }'; }
+scripts="$PWD/spike/scripts"
 
 for profile in "$@"; do
   echo "== $profile"
@@ -55,8 +61,8 @@ for profile in "$@"; do
   pid=$!
   sleep 1
   $sudo timeout 60 bpftrace -p "$pid" -e "
-    usdt:$bin:spike:work__entry { @entry[str(arg1, arg2)] = count(); }
-    usdt:$bin:spike:work__return { @ret = count(); }
+    usdt:$bin:spike:work__entry { @e[arg0, str(arg1, arg2)] = count(); }
+    usdt:$bin:spike:work__return { @r[arg0] = count(); }
     interval:s:3 { exit(); }" >"$out" 2>&1
   sleep 1
   kill "$pid" 2>/dev/null
@@ -65,15 +71,14 @@ for profile in "$@"; do
   expect "attach turned the probe on in the process" grep -q 'entry-enabled=true' "$log"
   expect "detach turned it off again" grep -q 'entry-enabled=false' "$log"
   for label in first-site second-site u32 u64; do
-    expect "read label '$label'" grep -q "^@entry\[$label\]: " "$out"
+    expect "read label '$label'" grep -qE "^@e\[[0-9]+, $label\]: " "$out"
   done
-  entries=$(sed -nE 's/^@entry\[.*\]: ([0-9]+)$/\1/p' "$out")
-  ret=$(sed -nE 's/^@ret: ([0-9]+)$/\1/p' "$out")
-  ret=${ret:-0}
-  total=$(printf '%s\n' $entries | awk '{ s += $1 } END { print s + 0 }')
-  diff=$((ret > total ? ret - total : total - ret))
-  expect "every label fired equally often (within 1)" test "$(printf '%s\n' $entries | spread)" -le 1
-  expect "one work__return per work__entry ($ret vs $total, within 4)" test "$diff" -le 4
+  report=$(awk -f "$scripts/per-iteration.awk" "$out")
+  problems=$(printf '%s\n' "$report" | grep -v '^full=')
+  full=$(printf '%s\n' "$report" | sed -n 's/^full=//p')
+  expect "every iteration fired each label once and work__return 4 times" test -z "$problems"
+  [ -z "$problems" ] || printf '%s\n' "$problems" | head -20 | sed 's/^/        /'
+  expect "at least 100 complete iterations in a row ($full)" test "${full:-0}" -ge 100
 
   if [ "$profile_failed" -ne 0 ]; then
     failed=1

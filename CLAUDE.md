@@ -68,11 +68,24 @@ done
 cargo test --workspace --no-default-features
 cargo test --workspace --features autoref
 
+# `--cfg anyprobe_dylib` (Linux only) replaces the direct `asm!` semaphore
+# load with a plain Rust load, for Rust `dylib` crates. A separate target dir
+# keeps the RUSTFLAGS change from rebuilding the default one.
+for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+  RUSTFLAGS="--cfg anyprobe_dylib" cargo clippy --workspace --target $t \
+    --all-targets --target-dir target/cfg-dylib -- -Dwarnings || break
+done
+
 # Spike attach checks, one per OS: build, attach the native tracer, and print
 # ok/FAIL per check. The CI jobs run the same scripts. Linux, FreeBSD and
 # macOS ask for sudo; Windows needs an elevated prompt. On macOS,
 # SPIKE_ATTACH=0 runs only the checks that need no root.
 spike/scripts/attach-linux.sh            # bpftrace
+spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
+# SystemTap (not in CI) needs file offsets equal to addresses, which rust-lld
+# does not produce by default; STAP picks a stap newer than the distro's.
+RUSTFLAGS="-C link-arg=-Wl,-z,separate-loadable-segments" \
+  CARGO_TARGET_DIR=target/sep-seg spike/scripts/attach-linux-stap.sh
 spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
 sh spike/scripts/attach-freebsd.sh       # dtrace -p, plus a -Z -c report
 pwsh spike\scripts\attach-windows.ps1     # logman + tracerpt
