@@ -363,9 +363,7 @@ Needs the other machines (`ATTACH_CRATE=anyprobe`):
 
 - Linux: bpftrace and perf attach (`attach-linux.sh`,
   `attach-linux-perf.sh`), x86_64 and aarch64.
-- Windows: ETW attach (`attach-windows.ps1`). First run of the lazy
-  registration, the enable callback, and `atexit` unregistration; none of it
-  has executed yet.
+- Windows: done, see the table below.
 
 ## FreeBSD (deferred)
 
@@ -428,6 +426,7 @@ them generic. `spike/scripts/attach-{linux,macos,freebsd}.sh` and
 | Question | Result | How it was checked |
 |---|---|---|
 | ETW session reaches the provider, events decode with `tracerpt` | Yes, release and release-lto: `logman create trace` against the printed provider GUID turned `work__entry` on in the running process and off again on stop; the decoded trace held 150 (151 for release-lto) events for each of `first-site`, `second-site`, `u32`, `u64`, equally often, plus `work__return` events | `spike/scripts/attach-windows.ps1` from an elevated prompt (`logman` needs administrator rights), Windows PowerShell 5.1 with `-ExecutionPolicy Bypass` since `pwsh` was not installed |
+| anyprobe's Windows backend (lazy registration, enable callback, `tracelogging_dynamic` events) behaves like the spike | Yes, release and release-lto: `logman` session on the printed GUID turned `work__entry` on and off in the running process; the decoded trace held 151 events for each of `first-site`, `second-site`, `u32`, `u64`, equally often, plus `work__return` events. `atexit` unregistration has no check of its own | `ATTACH_CRATE=anyprobe`, `attach-windows.ps1` from an elevated Windows PowerShell 5.1 prompt, 2026-10-02 |
 | Disabled cost on Windows x86_64 (same Threadripper 1950X as the Linux measurement) | 2.397 ns probed against 1.914 ns baseline: about 0.48 ns for two probes, 0.24 ns each — in the same range as Linux x86_64 (0.39 ns/probe) on identical hardware | criterion, `work_outlined` vs `baseline`, `cargo bench -p anyprobe-spike --bench disabled_cost` |
 
 ### Found by the spike
