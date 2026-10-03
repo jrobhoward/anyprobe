@@ -258,6 +258,13 @@ them generic. `spike/scripts/attach-{linux,macos,freebsd}.sh` and
 | perf attach on x86_64 | Yes, release and release-lto (perf 6.8.12), after moving `.stapsdt.base` into the text segment (see below): `perf probe` added all four sites, `perf record -p` raised the semaphore and cleared it on exit, and across 150 consecutive iterations each fired `work__entry` and `work__return` 4 times. bpftrace re-checked after the move, same result as above | `spike/scripts/attach-linux-perf.sh` and `attach-linux.sh` under sudo |
 | SystemTap attach on x86_64 | Only with the binary linked so file offsets equal virtual addresses (`-C link-arg=-Wl,-z,separate-loadable-segments`, about 1-2% larger). Then, release and release-lto: semaphore raised and cleared, `user_string_n($arg2, $arg3)` read every label, 150 consecutive complete iterations. With rust-lld's default layout it fails (below) | `spike/scripts/attach-linux-stap.sh` with SystemTap 5.6 built from source (Ubuntu 24.04's 5.0 cannot build modules for kernel 6.8) |
 
+### Settled locally (Windows x86_64 host, 2026-10-02)
+
+| Question | Result | How it was checked |
+|---|---|---|
+| ETW session reaches the provider, events decode with `tracerpt` | Yes, release and release-lto: `logman create trace` against the printed provider GUID turned `work__entry` on in the running process and off again on stop; the decoded trace held 150 (151 for release-lto) events for each of `first-site`, `second-site`, `u32`, `u64`, equally often, plus `work__return` events | `spike/scripts/attach-windows.ps1` from an elevated prompt (`logman` needs administrator rights), Windows PowerShell 5.1 with `-ExecutionPolicy Bypass` since `pwsh` was not installed |
+| Disabled cost on Windows x86_64 (same Threadripper 1950X as the Linux measurement) | 2.397 ns probed against 1.914 ns baseline: about 0.48 ns for two probes, 0.24 ns each — in the same range as Linux x86_64 (0.39 ns/probe) on identical hardware | criterion, `work_outlined` vs `baseline`, `cargo bench -p anyprobe-spike --bench disabled_cost` |
+
 ### Found by the spike
 
 - macOS probe calls must be emitted inside `asm!`, never as Rust calls. A
@@ -392,12 +399,11 @@ so users who set it get no warning.
   Candidate: an informational `attach-linux-perf.sh` step in `spike-linux`.
 - FreeBSD: `DTRACEHIOC_ADDDOF` registration, `fasttrap` emulation of the
   `xor eax, eax` is-enabled site, argument reads (`spike-freebsd`).
-- Windows: ETW session reaching the provider; events decoded by `tracerpt`
-  (`spike-windows`).
 - macOS: whether hosted runners allow `sudo dtrace` (`spike-macos`,
   informational). Local attach is settled.
-- Disabled cost on Linux aarch64 and Windows (`spike-bench`). Linux x86_64
-  is settled locally.
+- Disabled cost on Linux aarch64 (`spike-bench`). Linux x86_64 and Windows
+  x86_64 are settled locally.
+- Windows ARM64: untested, same as Linux aarch64 (see Risks).
 
 ## Risks
 
