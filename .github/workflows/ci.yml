@@ -241,6 +241,18 @@ jobs:
         run: spike/scripts/attach-macos.sh ${{ matrix.profile }}
         env:
           ATTACH_CRATE: ${{ matrix.crate }}
+      # `#[probe]` (the `attr` and `same_name` examples), once per target and
+      # profile: the anyprobe rows only, since the spike has no attribute.
+      - name: Check the DOF ld64 built for #[probe]
+        if: matrix.crate == 'anyprobe'
+        run: spike/scripts/attach-macos-attr.sh ${{ matrix.profile }}
+        env:
+          SPIKE_TARGET: ${{ matrix.target }}
+          SPIKE_ATTACH: "0"
+      - name: Attach dtrace to #[probe] (informational)
+        if: matrix.crate == 'anyprobe' && matrix.target == 'aarch64-apple-darwin'
+        continue-on-error: true
+        run: spike/scripts/attach-macos-attr.sh ${{ matrix.profile }}
 
   # Start an ETW session against the provider GUID the spike prints. Passing
   # means the provider saw the session (the process logged

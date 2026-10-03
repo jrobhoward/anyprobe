@@ -479,10 +479,45 @@ Needs verification:
 - Windows: the provider runtime changed (interning, per-probe flags). It
   compiles and lints for `x86_64-pc-windows-msvc`; nothing has run it.
   `ATTACH_CRATE=anyprobe attach-windows.ps1` re-checks the `work` example.
-- macOS: `#[probe]` sites through `inspect_dof` and `sudo dtrace`, including
-  two probes with one name and different argument types (likely a conflict
-  in ld64; see open questions).
-- Disabled cost of a `#[probe]` fn against the `work_outlined` baseline.
+
+### macOS (2026-10-03)
+
+Checked on the macOS host (Apple Silicon, macOS 27), with
+`spike/scripts/attach-macos-attr.sh` and by hand:
+
+- `inspect_dof` on the `attr` and `same_name` examples, arm64 and x86_64,
+  release and release-lto: every probe and is-enabled site rewritten by ld64
+  and inside its function. Unlike Linux, each encoding helper keeps one probe
+  site per probe here, not two.
+- Same name, different argument types (`same_name`: `Foo::new(x: u32)`,
+  `Bar::new()`, `other::new(label: &str)`, all `new__entry`): ld64 links it
+  without complaint and writes one DOF entry per containing function, each
+  with its own argument types. Identical no-payload return helpers were
+  merged by LLVM into one function, so `new__return` has one probe site that
+  all three callers reach. DTrace attaches to all three entries and reads
+  each one's arguments as that function declares them (below).
+- `sudo dtrace -c` with SIP on, release and release-lto, 20 iterations
+  (`attach-macos-attr.sh`): every encoding read with exact counts. Native
+  `id` and `path`, the native return value, `serde` JSON both by length and
+  up to its NUL, `debug` returns (10 `Ok(5)`, 10 `Err("odd N")`), the
+  collapsed JSON object, and `debug(self)`. For `same_name`, `Foo::new` read
+  `x` as 0..19, `Bar::new` fired 20 times, `other::new` read `label` 20
+  times, and `new__return` fired 60 times. The first run reported two
+  failures, both in the script: its unexpected-output check did not allow
+  dtrace's SIP notice.
+- Disabled cost: the `#[probe]` function in the benchmark compiles to the
+  same 17-instruction hot path as the hand-written `probed` (two is-enabled
+  sites, the frame for the cold calls; only register choices and the helper
+  names differ), against 7 for the unprobed baseline. Timings taken on
+  battery power with a recent build load were about 3.3 ns for all three and
+  the spike alike (0.95 ns baseline on 2026-10-02), so they settle nothing
+  below a nanosecond; the instruction comparison does.
+- Every Definition of Done check that runs on macOS passes, including clippy
+  1.99 on every target, the `ui_rustc` cases on 1.99, every feature set, MSRV
+  1.88, `cargo deny` and the publish dry run. The dry run first failed on a
+  stale local build of `anyprobe-macros 0.1.0` from an earlier dry run (cargo
+  treats a registry crate of one version as immutable); CLAUDE.md now says to
+  `cargo clean -p` both crates first.
 
 ### Open questions
 
@@ -495,9 +530,12 @@ Needs verification:
   `macro_rules!` defined by `anyprobe::provider!` at the crate root (works
   only for modules declared after it, and makes it mandatory).
 - Same probe name, different signatures: `Foo::new(x: u32)` and
-  `Bar::new()` both default to `new__entry`. SDT and ETW tolerate it; DTrace
-  probably does not. Detecting it needs crate-wide knowledge the macro does
-  not have (phase 4's registry could check at link time or at startup).
+  `Bar::new()` both default to `new__entry`. SDT and ETW tolerate it. On
+  macOS ld64 writes one DOF entry per function and DTrace reads each with its
+  own types (see macOS above), so a script must branch on `probefunc` to
+  know which arguments it has. Detecting a clash needs crate-wide knowledge
+  the macro does not have (phase 4's registry could warn at link time or at
+  startup).
 - Truncation is silent. A flags operand would cost one of the six, and
   bpftrace's own 64-byte default cuts long before 4096.
 - Payload cap is a constant. Configurable at runtime costs a load in the cold

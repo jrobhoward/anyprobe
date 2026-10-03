@@ -1,6 +1,8 @@
 //! Cost of a probed function with no tracer attached, against the same
-//! function with no probes. Mirrors the spike's benchmark, so the generated
-//! code can be compared with the hand-written probes.
+//! function with no probes. `probed` mirrors the spike's benchmark, so the
+//! generated code can be compared with the hand-written probes; `attribute`
+//! is the same function under `#[probe]` with the same arguments and a native
+//! return value.
 
 #![allow(missing_docs)]
 
@@ -42,6 +44,12 @@ fn probed(id: u64, label: &str) -> u64 {
     result
 }
 
+#[anyprobe::probe(provider = "bench", ret = native)]
+#[inline(never)]
+fn attribute(id: u64, label: &str) -> u64 {
+    compute(id, label)
+}
+
 #[inline(never)]
 fn baseline(id: u64, label: &str) -> u64 {
     compute(id, label)
@@ -54,6 +62,9 @@ fn disabled_cost(c: &mut Criterion) {
     });
     group.bench_function("probed", |b| {
         b.iter(|| probed(black_box(42), black_box("label")));
+    });
+    group.bench_function("attribute", |b| {
+        b.iter(|| attribute(black_box(42), black_box("label")));
     });
     group.finish();
 }

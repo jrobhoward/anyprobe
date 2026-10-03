@@ -109,6 +109,7 @@ spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
 RUSTFLAGS="-C link-arg=-Wl,-z,separate-loadable-segments" \
   CARGO_TARGET_DIR=target/sep-seg spike/scripts/attach-linux-stap.sh
 spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
+spike/scripts/attach-macos-attr.sh       # `#[probe]`, every encoding, same-name probes
 sh spike/scripts/attach-freebsd.sh       # deferred: spike only, dtrace -p and -Z -c
 # Windows: elevated Windows PowerShell. Execution policy blocks unsigned
 # scripts by default, so pass Bypass for this one invocation (`pwsh` is not
@@ -120,6 +121,14 @@ powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # lo
 $env:ATTACH_CRATE = 'anyprobe'
 powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # the `work` example
 powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows-attr.ps1   # `#[probe]`, every encoding
+
+# Packaging, as the CI `package` job runs it. The verify step builds the
+# packaged crates as registry crates, and cargo assumes a registry crate of a
+# given version never changes: a build left in `target/` by an earlier dry run
+# of the same version is reused, and verification fails on code that builds
+# (e.g. "no `probe` in the root"). CI starts clean; locally,
+# `cargo clean -p anyprobe-macros -p anyprobe` first.
+cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe
 
 # Supply chain — run before adding or updating any dependency. `advisories`
 # also runs weekly in CI, since the database changes with no commit here.
@@ -307,8 +316,11 @@ Before considering any change complete:
   spike and once with `ATTACH_CRATE=anyprobe`: `attach-linux.sh` (sudo),
   `attach-macos.sh` (sudo) and `attach-windows.ps1` (elevated prompt, with
   `-ExecutionPolicy Bypass`). `#[probe]` has an attach script on Linux
-  (`attach-linux-attr.sh`) and Windows (`attach-windows-attr.ps1`); on macOS
-  it is checked by running the `attr` example with no tracer attached
+  (`attach-linux-attr.sh`), macOS (`attach-macos-attr.sh`, sudo) and
+  Windows (`attach-windows-attr.ps1`). Run the macOS scripts as yourself, not
+  under `sudo`: they call `sudo` for dtrace only, and cargo run as root
+  leaves root-owned files in `target/`
+- `cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe` passes
 
 ## Docs are part of "done"
 
