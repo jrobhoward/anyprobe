@@ -1,0 +1,66 @@
+# cargo-deny policy for anyprobe.
+#
+# This file exists to answer one question on every build:
+#   Is every dependency under a permissive (non-copyleft) licence?
+#
+# anyprobe emits probe formats defined by projects whose own code is
+# copyleft or weak copyleft — DTrace is CDDL, SystemTap and bpftrace are GPL —
+# and the obvious shortcut is to depend on, or copy from, one of them. The
+# crate implements the on-disk formats instead, and the allow-list below keeps
+# the dependency graph permissive.
+
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-unknown-freebsd" },
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "aarch64-pc-windows-msvc" },
+]
+# Optional dependencies still count: a user who enables a feature gets its
+# graph too, so all features must be evaluated.
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+unmaintained = "workspace"
+# Advisories consciously accepted, each with a rationale and a link. Empty is
+# the goal; an entry here is a decision, not a snooze button.
+ignore = []
+
+[licenses]
+# Permissive only. Every licence below imposes no reciprocal source-disclosure
+# obligation on downstream users of `anyprobe`.
+#
+# Absent on purpose, and the reason this is an allow-list:
+#   - MPL-2.0        weak/file-level copyleft
+#   - LGPL-*         copyleft with linking obligations
+#   - GPL-*, AGPL-*  strong copyleft (SystemTap, bpftrace)
+#   - CDDL-*         file-level copyleft (DTrace)
+#   - EPL-*, SSPL-*, BUSL-*
+#
+# If a dependency ever needs one of these, that is a decision to take
+# explicitly, in a PR that edits this list and says why.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Crates whose licences are incompatible with this crate's goals, listed by
+# name so an accidental `cargo add` fails loudly. Empty until one is found.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

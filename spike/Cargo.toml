@@ -1,0 +1,37 @@
+[package]
+name = "anyprobe-spike"
+version = "0.0.0"
+description = "Hand-written probes for each anyprobe backend, used to settle the design before the macro exists"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# FreeBSD registers probes at runtime: the probe records are turned into DOF
+# and handed to the kernel through `/dev/dtrace/helper`.
+[target.'cfg(target_os = "freebsd")'.dependencies]
+dof = { version = "0.4", default-features = false }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+tracelogging = "1.2"
+
+[dev-dependencies]
+# 0.5, not 0.8: 0.8 builds a C dependency (`alloca`) unconditionally, which
+# breaks `cargo clippy --all-targets --target ...` for every cross target.
+criterion = { version = "0.5", default-features = false }
+# The record parser is plain data processing, so its tests run on every host,
+# not only on FreeBSD. `des` reads DOF back out of a linked binary for the
+# `inspect_dof` example.
+dof = { version = "0.4", default-features = false, features = ["des"] }
+# Symbols and section addresses for `inspect_dof`'s site checks. Same version
+# `dof` uses, so no second copy enters the graph.
+goblin = { version = "0.10", default-features = false, features = ["std", "mach64", "mach32"] }
+
+[[bench]]
+name = "disabled_cost"
+harness = false

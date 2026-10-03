@@ -1,0 +1,215 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # The advisory database changes without any commit here, so the security
+  # audit needs a clock as well as a push to trigger it.
+  schedule:
+    - cron: "17 6 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+# RUSTFLAGS=-Dwarnings is not set here: it would apply to dependency
+# compilation too, so a new stable rustc adding one warning anywhere in the
+# graph would red every job with no anyprobe changes. Every lint gate passes
+# `-Dwarnings` to `cargo clippy` explicitly instead. See CLAUDE.md.
+
+jobs:
+  build:
+    name: build / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -Dwarnings
+      # Scoped to this step: a broken intra-doc link should fail, a warning
+      # inside a dependency should not.
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  cross-check:
+    name: cross-compile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-freebsd, x86_64-pc-windows-msvc
+      # `--all-targets` so the `cfg`-gated `*_tests.rs` files compile too.
+      - name: Clippy per target
+        run: |
+          set -euo pipefail
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+                   x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+            cargo clippy --workspace --target $t --all-targets -- -Dwarnings
+          done
+      # `check` and `clippy` stop before codegen and never assemble an `asm!`
+      # template. `build --lib` reaches codegen and needs no linker.
+      - name: Codegen per target
+        run: |
+          set -euo pipefail
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+                   x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+            cargo build -p anyprobe-spike --lib --release --target $t
+          done
+
+  msrv:
+    name: MSRV (1.88.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - run: cargo check --locked --workspace --all-targets
+      - run: cargo test --locked --workspace
+
+  licenses:
+    name: licence policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
+
+  # Separate from the licence job so a new advisory is reported as its own
+  # failure rather than reading as a licence problem.
+  advisories:
+    name: security advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+      # `Cargo.lock` pins every other job. This one resolves fresh, which is
+      # where an upstream release this workspace cannot build against shows up.
+      - name: Build against freshly resolved dependencies
+        run: |
+          set -euo pipefail
+          cargo update
+          cargo check --workspace --all-targets
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # Attach bpftrace to the running spike. Passing means: the semaphore flipped
+  # inside the process when bpftrace attached and back when it detached, and
+  # bpftrace read the arguments from every site.
+  spike-linux:
+    name: spike attach / ${{ matrix.os }} / ${{ matrix.profile }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+        profile: [release, release-lto]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y bpftrace
+      - name: Attach bpftrace
+        run: bash spike/scripts/attach-linux.sh ${{ matrix.profile }}
+
+  # GitHub's macOS runners have SIP on, so dtrace may be refused. What must
+  # hold regardless, for both architectures: ld64 built DOF with every
+  # expected site, rewrote every site, and no site ends its function (a tail
+  # call there would fall through into the next function once rewritten).
+  # `inspect_dof` checks all of it and fails on any bad site.
+  spike-macos:
+    name: spike / macos / ${{ matrix.target }} / ${{ matrix.profile }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+        profile: [release, release-lto]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Check the DOF ld64 built
+        run: spike/scripts/attach-macos.sh ${{ matrix.profile }}
+        env:
+          SPIKE_TARGET: ${{ matrix.target }}
+          SPIKE_ATTACH: "0"
+      # Works with SIP on for this binary on a local Apple Silicon Mac;
+      # whether the hosted runner allows it is what this step reports.
+      - name: Attach dtrace (informational)
+        if: matrix.target == 'aarch64-apple-darwin'
+        continue-on-error: true
+        run: spike/scripts/attach-macos.sh ${{ matrix.profile }}
+
+  # Start an ETW session against the provider GUID the spike prints. Passing
+  # means the provider saw the session (the process logged
+  # entry-enabled=true) and the session captured events.
+  spike-windows:
+    name: spike attach / windows / ${{ matrix.profile }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [release, release-lto]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Attach an ETW session
+        run: ./spike/scripts/attach-windows.ps1 -Profiles ${{ matrix.profile }}
+
+  # Root in the VM, so dtrace runs for real. Passing means registration
+  # succeeded and dtrace read the arguments from every site.
+  spike-freebsd:
+    name: spike attach / freebsd
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          usesh: true
+          prepare: |
+            pkg install -y curl
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          run: |
+            set -eu
+            . "$HOME/.cargo/env"
+            cargo test -p anyprobe-spike
+            sh spike/scripts/attach-freebsd.sh
+
+  # Informational: the disabled cost on each runner. Shared runners are noisy,
+  # so this reports and never fails the build.
+  spike-bench:
+    name: spike bench / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo bench -p anyprobe-spike --bench disabled_cost -- --warm-up-time 2 --measurement-time 5

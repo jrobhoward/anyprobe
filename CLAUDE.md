@@ -1,0 +1,322 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+`anyprobe` adds USDT-style probes to Rust functions on Linux, macOS, FreeBSD
+and Windows. `#[anyprobe::probe]` on a function gives it stable-named entry
+and return probes that a tracer attaches to in a running process: SystemTap
+SDT notes on Linux (bpftrace, perf, SystemTap), DTrace USDT on macOS and
+FreeBSD, ETW TraceLogging on Windows. With no tracer attached a probe costs
+one enabled check, and argument encoding does not run. Other targets compile
+the probes to nothing.
+
+The crate is pre-1.0. `docs/PLAN.md` holds the design, the phases and the
+open questions; read it before changing anything structural. The workspace
+currently holds only `spike/` (`anyprobe-spike`, unpublished): hand-written
+probes per backend that settle the design before the macro exists. Commands
+below that name `anyprobe` or `anyprobe-macros` apply once those crates exist.
+
+## Commands
+
+```bash
+# Build
+cargo build --workspace --all-targets
+
+# Test
+cargo test --workspace
+cargo test -p anyprobe-macros --test ui           # trybuild compile-fail tests only
+cargo test some____test____name                   # single test
+
+# trybuild: regenerate expected .stderr after an intended diagnostic change,
+# then review the diff before committing it.
+TRYBUILD=overwrite cargo test -p anyprobe-macros --test ui
+
+# Lint (must be clean before any change is considered done)
+cargo clippy --workspace --all-targets -- -Dwarnings
+cargo fmt --all -- --check
+
+# Rustdoc, with broken intra-doc links treated as errors. Set on this command
+# only, never in a shared `env:` block — see "Never set RUSTFLAGS" below.
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# Cross-compile checks for the other OS backends. Each needs `--all-targets`:
+# without it the `*_tests.rs` files are not compiled, and a `cfg`-gated test
+# referring to something that has been renamed sails straight through. Needs
+# `rustup target add` for each target once.
+for t in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-unknown-freebsd \
+         x86_64-pc-windows-msvc; do
+  cargo clippy --workspace --target $t --all-targets -- -Dwarnings || break
+done
+
+# `check` and `clippy` stop before codegen, so they never assemble an `asm!`
+# template. A bad directive or section name in a backend only fails at codegen.
+# `build --lib` reaches codegen and needs no linker, so it runs for every
+# target from any host.
+for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+         x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+  cargo build -p anyprobe --lib --target $t || break
+done
+
+# Feature combinations. A `cfg` gated on a feature is only compiled in the
+# sets that enable it, so a default build proves nothing about the others.
+for f in "" "--no-default-features" "--features autoref" \
+         "--no-default-features --features autoref" "--all-features"; do
+  cargo clippy --workspace --all-targets $f -- -Dwarnings || break
+done
+cargo test --workspace --no-default-features
+cargo test --workspace --features autoref
+
+# Spike attach checks, one per OS: build, attach the native tracer, and print
+# ok/FAIL per check. The CI jobs run the same scripts. Linux, FreeBSD and
+# macOS ask for sudo; Windows needs an elevated prompt. On macOS,
+# SPIKE_ATTACH=0 runs only the checks that need no root.
+spike/scripts/attach-linux.sh            # bpftrace
+spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
+sh spike/scripts/attach-freebsd.sh       # dtrace -p, plus a -Z -c report
+pwsh spike\scripts\attach-windows.ps1     # logman + tracerpt
+
+# Supply chain — run before adding or updating any dependency. `advisories`
+# also runs weekly in CI, since the database changes with no commit here.
+cargo deny check licenses bans sources advisories
+
+# MSRV — pin to the exact floor `rust-version` in Cargo.toml declares. Needs
+# `rustup toolchain install 1.88.0` once; `cargo clippy --all-targets` alone
+# uses whatever toolchain is active and will not catch API usage newer than
+# the floor.
+cargo +1.88.0 check --workspace --all-targets
+```
+
+## Architecture
+
+See `docs/PLAN.md` for the design. Summary a contributor needs day to day:
+
+- Cargo workspace, edition 2024, `rust-version = 1.88.0`.
+- `crates/anyprobe` is the facade and runtime: per-OS backends as
+  `cfg`-selected modules, the encoders, and the `#[doc(hidden)] __private`
+  module that generated code calls into.
+- `crates/anyprobe-macros` is the `#[probe]` attribute. Its compile-fail
+  behaviour is pinned by trybuild tests in `crates/anyprobe-macros/tests/ui/`.
+
+## Platform constraints worth knowing before editing a backend
+
+**A probe site must survive being duplicated.** Inlining, monomorphization
+and LLVM's own duplication each copy an `asm!` block. Probe sites use numeric
+local labels (`990:` / `990b`), as `sys/sdt.h` does, so every copy is another
+site under the same probe name rather than a duplicate-symbol error. Do not
+introduce a named label in a probe site.
+
+**Probe sites that pass pointers are `readonly`, never `nomem`.** The tracer
+reads memory through the arguments at the site. Under `nomem` the compiler may
+sink or drop a store to a buffer whose only reader is the probe, such as an
+encoded argument written just before it. Is-enabled sites pass no pointers and
+stay `nomem`.
+
+**A probe site that is a call must be an `asm!` call, never a Rust call.**
+On macOS ld64 rewrites `__dtrace_probe$...` calls in place to `nop`. A Rust
+call that ends a function compiles to a tail call with no `ret` after it, so
+the rewritten site falls through into whatever function follows.
+`spike/examples/inspect_dof.rs` fails on any site that ends its function; run
+it on a release and a release-lto build after touching the macOS backend.
+
+**Argument encoding only runs behind the enabled check.** On Linux that check
+is the SDT semaphore; without one, a tracer sees the probe but every call pays
+for encoding its arguments. Encoding lives in `#[cold]` `#[inline(never)]`
+helpers so the hot path is the check and nothing else. Do not move encoding
+work in front of the check, even for a "cheap" type.
+
+**`autoref` is strictly additive.** Anything that compiles with the feature
+off must encode identically with it on, because Cargo unifies features across
+the dependency graph and one crate enabling it changes the build for every
+other. A change that makes `autoref` alter an encoding that already compiled
+without it is a bug, whatever it fixes.
+
+**Exported symbols use `#[unsafe(export_name = ...)]`.** Edition 2024 rejects
+the bare form in generated code. The `symbol` option refuses generic fns,
+trait-impl methods and async fns at compile time, since none has a single
+stable symbol.
+
+**A compile-time guard only fires where it is compiled.** A `compile_error!`
+that rejects a feature or option combination has to live in code every
+platform builds, not inside the backend module it guards. A guard placed
+inside `cfg`-gated code is missing on exactly the configurations that most
+need it. trybuild runs on the host only, so a guard that depends on the
+target is checked with `cargo check --target` on each one.
+
+**Generated code must be clean in the caller's crate.** It is compiled under
+the caller's lints, not this workspace's. It uses absolute paths
+(`::anyprobe::__private::...`), `__anyprobe_`-prefixed identifiers, and the
+`#[allow]`s it needs, and the test crates that exercise it run under
+`cargo clippy -- -Dwarnings` like everything else.
+
+## Licensing is a design constraint
+
+The crate is MIT OR Apache-2.0 with no copyleft anywhere in the dependency
+graph. The projects that define the probe formats are not permissive: DTrace
+is CDDL, SystemTap and bpftrace are GPL. The crate implements the formats
+(SDT notes, DOF, TraceLogging metadata) from their specifications and never
+copies source or headers from those projects. The `usdt` crate (Apache-2.0)
+may be reused or vendored with its licence notice.
+
+`deny.toml`'s licence allow-list is permissive-only and excludes copyleft by
+omission; adding an MPL/LGPL/GPL/CDDL dependency fails CI by design. The fix
+is a PR that edits the allow-list and says why, never a silent `exceptions`
+entry. Crates found to be incompatible go in `[bans] deny` by name.
+
+## CI
+
+`.github/workflows/ci.yml` carries these jobs. Keep them when editing it.
+
+- **build:** ubuntu, macos and windows matrix: build, test, clippy and doc
+  per feature set.
+- **freebsd:** the same in a FreeBSD VM.
+- **cross-check:** every target with `--all-targets`, plus `build --lib` per
+  target for the `asm!` templates.
+- **probe attach:** each OS attaches with the native tool where the runner
+  allows it. Linux uses bpftrace under sudo, Windows uses an ETW session as
+  admin, and FreeBSD uses dtrace as root in the VM. macOS runners have SIP on,
+  so that job only checks that the probe metadata is present in the binary.
+  A job that cannot verify fails with an explanation rather than skipping
+  silently.
+- **msrv:** `dtolnay/rust-toolchain@1.88.0`, `check --locked` and
+  `test --locked`.
+- **licenses** and **advisories:** separate jobs. Advisories also runs on a
+  weekly cron and builds once against freshly resolved dependencies
+  (`cargo update`).
+- **package:** `cargo publish --locked --dry-run` per crate.
+- **semver:** `cargo-semver-checks`, skipped with a notice until a baseline
+  exists on crates.io.
+- **fmt.**
+
+**A multi-line `run:` in the cross-OS matrix needs `shell: bash`.** The
+Windows default shell is PowerShell, which does not parse `if`, `[`, `&&` or
+`2>/dev/null`. A step whose body is more than one `cargo` invocation sets the
+shell explicitly; a job with more than a couple of such steps sets
+`shell: bash` under `defaults:` once.
+
+**Never set `RUSTFLAGS=-Dwarnings` in the CI environment** (or any shared
+`env:` block). It applies to dependency compilation too, so a new stable rustc
+that adds one warning anywhere in the graph reds every job with no anyprobe
+changes. Pass `-Dwarnings` to `cargo clippy` explicitly instead, which scopes
+the deny to this workspace.
+
+## Definition of Done
+
+Before considering any change complete:
+
+- `cargo test --workspace` passes with zero failures, trybuild included
+- `cargo clippy --workspace --all-targets -- -Dwarnings` is clean
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` is clean
+- `cargo fmt --all -- --check` is clean
+- `cargo deny check licenses bans sources advisories` passes
+- `Cargo.lock` is committed, so a dependency change shows up in the diff
+- The cross-compile clippy loop and the `build --lib` loop pass on every
+  target
+- The feature-combination commands pass. A change under a `cfg` or a
+  `#[cfg(feature)]`-gated test is not done until the sets that exclude it have
+  been run
+- `cargo +1.88.0 check --workspace --all-targets` (MSRV) passes
+- No `.unwrap()` / `.expect()` in production code, generated code included
+- New public items have doc comments (`missing_docs` catches this)
+- A changed diagnostic has its trybuild `.stderr` updated and reviewed
+- `CHANGELOG.md` has an entry for anything a user would notice
+- If behaviour changed on a platform, it was verified with real tools there
+  (bpftrace, dtrace, an ETW session), or the fact that it was not is stated
+  plainly
+
+## Docs are part of "done"
+
+Each file has one job; keep changes in the right one rather than restating
+across them:
+
+| File | Holds | Scope |
+|---|---|---|
+| `README.md` | What the crate does, how to use it, and the caveats that change how it should be used | Link out rather than expand |
+| `docs/PLAN.md` | The pre-1.0 design, phases and open questions | Exempt from the writing-style rules. Split into `ARCHITECTURE.md` and `GAPS.md` once the design settles, then deleted |
+| `docs/ARCHITECTURE.md` | Module map and why each backend was chosen over its alternatives | Update when a design decision changes; not a development log |
+| `docs/GAPS.md` | Every known limitation, why it exists, and what changing it costs | One section per gap. Add to it rather than quietly narrowing scope |
+| `CHANGELOG.md` | What changed in each release, and enough of why to act on it | Keep a Changelog format. One entry per released version |
+| `SECURITY.md` | How to report a vulnerability, and what is in scope | Reporting process and scope, not a list of known issues |
+| `CLAUDE.md` | Conventions and constraints a contributor needs before editing | Rules, not narrative |
+
+## Writing style for `README.md`, `docs/*.md` and rustdoc
+
+`docs/PLAN.md` is exempt while it exists.
+
+- **No second person, no first person.** Not "your function", "you can", "we
+  chose". Describe the crate and what it does: "emits an SDT note", "the
+  backend registers the provider at startup". Imperatives are fine in
+  instructions. The dual-licence boilerplate in the README is standard legal
+  text and stays as it is.
+- **Bold is for bullet lead-ins only** — the first word or phrase of a list
+  item. No bold mid-sentence, none in table cells, none opening a paragraph.
+  Italics are for genuine contrast, used sparingly.
+- **No decorative icons.** Write "yes" and "no" in tables, not ✅ and ❌.
+- **Do not sell.** Avoid "the whole point", "load-bearing", "genuinely",
+  "crucially", "deliberately", "notably". State the fact and stop.
+- **Plain words, short sentences.** Prefer "use" over "utilize", "about" over
+  "approximately", "does nothing" over "is inert".
+- **Understate the caveats.** "Nobody has run it on FreeBSD yet" beats "a
+  critical unverified gap".
+- **No development-phase framing.** Don't attribute a fact to "the Phase N
+  spike" or narrate how a decision was reached over time. State the current
+  fact and, if the reasoning matters, the reasoning.
+
+## Conventions
+
+**Workspace lints:** lints live in the root `Cargo.toml` under
+`[workspace.lints]`, and every crate opts in with `[lints] workspace = true`.
+A crate-local `[lints]` table is not added; a lint that one crate needs to
+relax is relaxed with a scoped `#[allow]` and a comment.
+
+**Test file layout:** tests live in separate `*_tests.rs` files, registered at
+the bottom of the source file with:
+```rust
+#[cfg(test)]
+#[path = "encode_tests.rs"]
+mod encode_tests;
+```
+Integration tests live in each crate's `tests/`. Compile-fail tests live in
+`crates/anyprobe-macros/tests/ui/`, one case per `.rs` file with its expected
+`.stderr` beside it.
+
+**Test naming:** `subject____condition____result` — exactly four underscores
+between segments. Because consecutive underscores trip `non_snake_case`, every
+`*_tests.rs` file carries `#![allow(non_snake_case)]` at the top, alongside
+`#![allow(clippy::unwrap_used)]` and `#![allow(clippy::expect_used)]`. trybuild
+case files use the same pattern as their file name
+(`symbol____on_generic_fn____is_rejected.rs`).
+
+**No `.unwrap()` / `.expect()` in production code** — use `?`. `clippy.toml`
+allows them in tests only. Workspace lints also warn on `cognitive_complexity`,
+`must_use_candidate`, `return_self_not_must_use`, `missing_errors_doc` and
+`undocumented_unsafe_blocks`: a new public method that returns `Self` or a
+`Result` has to carry `#[must_use]` or an `# Errors` section, and every
+`unsafe` block carries a `// SAFETY:` comment. These are lint gates rather
+than conventions, so none can be skipped quietly.
+
+**Public docs:** every new public item needs a doc comment — `missing_docs` is
+on, so this is enforced rather than asked for. Doc examples that use a gated
+API must be `cfg`-gated too; `cargo test` runs them. `README.md`'s example is
+compiled as a doctest via `#[cfg(doctest)]` in `lib.rs`, so it cannot drift.
+Rustdoc must not link to a repository-relative path like `docs/GAPS.md` — a
+docs.rs reader cannot follow one; use the absolute GitHub URL there and keep
+relative links in the Markdown files. docs.rs builds one target per backend
+(`package.metadata.docs.rs`), with `doc_cfg` behind the `docsrs` cfg so each
+item shows the platform it belongs to.
+
+**Errors:** `thiserror`, in `error.rs`. Public error enums are
+`#[non_exhaustive]`.
+
+**Public API:** pre-1.0, so a breaking change is a minor version bump with a
+`CHANGELOG.md` entry. `__private` is `#[doc(hidden)]` and outside the semver
+contract, but the macro and runtime crates are released in lockstep with an
+exact (`=`) version requirement between them, so generated code always
+matches the runtime it calls.
+
+**Unsafe:** `unsafe_op_in_unsafe_fn` is `forbid` and
+`missing_debug_implementations` is `warn`, both in `[workspace.lints]`. FFI calls, `asm!` blocks and
+`ioctl`s need a `// SAFETY:` comment saying why the operation is sound — what
+the arguments point at, what the callee does with them, and what is kept
+alive.

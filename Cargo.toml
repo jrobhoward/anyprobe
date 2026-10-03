@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = ["spike"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT OR Apache-2.0"
+authors = ["James Howard <jrobhoward@gmail.com>"]
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+cognitive_complexity = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+# A builder whose result is dropped configures nothing, and a `Result`-returning
+# public method has to say which errors it means. Both are gates rather than
+# one-off attributes, so a new public item cannot quietly skip them.
+must_use_candidate = "warn"
+return_self_not_must_use = "warn"
+missing_errors_doc = "warn"
+# Every `unsafe` block states why it is sound. This crate is mostly `asm!`,
+# FFI and `ioctl`, so the comment is the review.
+undocumented_unsafe_blocks = "warn"
+
+# Fat LTO with one codegen unit: the configuration most likely to merge,
+# duplicate or discard a probe site. The spike builds with this as well as the
+# default release profile.
+[profile.release-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
