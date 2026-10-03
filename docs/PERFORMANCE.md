@@ -6,7 +6,7 @@ records it, and how each platform differs.
 | Target | No tracer attached, per probe | Tracer attached, per firing |
 |---|---|---|
 | Linux | one load and compare of the SDT semaphore: about 0.4 ns | one breakpoint trap into the kernel and the tracer's BPF program: 0.4 to 0.6 µs measured with bpftrace, about 1.2 µs with `perf record` |
-| macOS | one instruction that ld64 wrote to set the result to false: about 0.16 ns | two traps into the kernel and the D clause: 0.7 to 2.1 µs measured |
+| macOS | one instruction that ld64 wrote to set the result to false: about 0.16 ns | two traps into the kernel and the D clause: 0.7 to 2.3 µs measured |
 | FreeBSD (x86-64) | one `xor eax, eax`: about 0.37 ns | two traps into the kernel and the D clause: 1.0 to 1.3 µs measured, in a virtual machine |
 | Windows | one load of an atomic flag: about 0.24 ns | no trap; the event is built in the process and written with one system call: 0.4 to 0.5 µs measured |
 | other targets | nothing; the check is the constant `false` | no tracer |
@@ -139,21 +139,26 @@ sequenceDiagram
 ```
 
 Each firing is two traps: the enabled check is a site of its own. Measured
-with the `overhead` example on an Apple M1, macOS 27, 1,000,000 calls of
-each function, each call firing an entry and a return probe:
+with the `overhead` example on an Apple M1, macOS 27.0, DTrace `Sun D 1.19`,
+SIP on, 1,000,000 calls of each function, each call firing an entry and a
+return probe. Each cell is the median of three runs, with the range in
+brackets:
 
 | dtrace action on every probe | `native` | `encoded` |
 |---|---|---|
-| none attached | 3.1 ns per call | 3.3 ns per call |
-| `@[probename] = count()` | 4272 ns per call | 4605 ns per call |
-| `printf` of every argument | 1442 ns per call | 3326 ns per call |
+| none attached | 3.1 ns per call (3.1 to 3.1) | 3.3 ns per call (2.9 to 3.4) |
+| `@[probename] = count()` | 4267 ns per call (4265 to 4267) | 4604 ns per call (4603 to 4614) |
+| `printf` of every argument | 1468 ns per call (1440 to 1483) | 3326 ns per call (3323 to 3345) |
 
-That is 0.7 to 2.1 µs per firing. The no-tracer time of the unprobed
-function moved between 1.2 and 3.1 ns from one run to the next, which fits
-the thread running on an efficiency core in some runs and a performance core
-in others, so these runs give the order of magnitude, not a precise figure.
-Formatting the small struct in `encoded` with `{:?}` added about 0.3 µs per
-call in the counting run.
+That is 0.7 to 2.3 µs per firing, and the three runs of each attached row
+agree to within 3%. Every counting run saw all 8,000,000 firings (the timed
+pass and an untimed warm-up pass), and dtrace reported no drops in any run.
+Counting costs about three times as much per firing as `printf` for
+`native`; the runs do not show why. Formatting the small struct in `encoded`
+with `{:?}` adds about 0.3 µs per call when counting and 1.9 µs when
+printing. The unprobed `baseline` function took 3.1 to 3.5 ns per call with
+no tracer and 1.3 ns under dtrace, so a difference of a few nanoseconds in
+the first row is within that spread.
 
 ### FreeBSD
 

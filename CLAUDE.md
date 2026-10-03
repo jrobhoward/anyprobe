@@ -136,8 +136,9 @@ powershell -ExecutionPolicy Bypass -File spike\scripts\capture-docs-windows.ps1
 
 # Checks of runtime claims in docs/GAPS.md that the attach scripts do not
 # cover: a killed tracer leaves no breakpoint or raised semaphore behind,
-# and (Linux) a probe in a dlopen'd cdylib can be traced. Not in CI.
+# and (Linux, macOS) a probe in a dlopen'd cdylib can be traced. Not in CI.
 spike/scripts/check-gaps-linux.sh        # sudo
+spike/scripts/check-gaps-macos.sh        # sudo for dtrace and lldb; run as yourself
 sh spike/scripts/check-gaps-freebsd.sh   # sudo or doas, lldb
 
 # Disabled-probe cost (criterion), as the CI `spike bench` job runs it

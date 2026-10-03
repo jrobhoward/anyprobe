@@ -8,81 +8,45 @@ remove the references to it from `CLAUDE.md` and `ARCHITECTURE.md`.
 
 ## Where to pick up
 
-Linux and FreeBSD (VM) have run everything in section 1
-they can. Next is macOS, then Windows. On each host, in order:
-
-### macOS
-
-1. Re-run the attach checks. The FreeBSD commit (`e0b81e8`) added
-   `dtrace_name`, `function` and `c_types` to every `define_probe!` input,
-   and the macOS backend's pattern changed with it; nothing has attached on
-   macOS since. As yourself (they call sudo for dtrace only):
-   `spike/scripts/attach-macos.sh`, `ATTACH_CRATE=anyprobe
-   spike/scripts/attach-macos.sh`, `spike/scripts/attach-macos-attr.sh`.
-   `inspect_dof` runs inside them.
-2. Write `spike/scripts/check-gaps-macos.sh` (bash is fine on macOS), ported
-   from `check-gaps-freebsd.sh` and the cdylib half of
-   `check-gaps-linux.sh`, and run it:
-   - killed tracer: dtrace on `spike<PID>:::work-entry` (no `-p`), then
-     `kill -9`; the `work` example must report the probe off and every
-     site's bytes must match what they were before attaching. Do not look
-     for `0xcc`: on arm64 the trap is a `brk`, so compare the bytes before,
-     during and after. Site addresses: `spike/examples/inspect_dof.rs`
-     already finds every site; reuse its output or code. Read the bytes with
-     lldb (`memory read`), as the FreeBSD script does.
-   - killed `dtrace -p`: does the program die with it, as on FreeBSD? Record
-     either answer in GAPS.md.
-   - cdylib: the scratch `plug` (providers `plugonly` and `shared`) and
-     `host` (`shared`) from `check-gaps-linux.sh`, built as a `.dylib`.
-     `dtrace -l -n 'plugonly<PID>:::'` must list module `libplug.dylib`
-     (dyld registered the library's DOF), and `dtrace -p` must read
-     `plugonly$target:::tick`. Then `shared$target:::tick`, defined in both
-     files: report the firings per `probemod`. bpftrace cannot attach to
-     that case on Linux.
-3. Run `spike/scripts/capture-docs-macos.sh` three times; put the median
-   and range per row in `PERFORMANCE.md` (section 2).
-4. Update GAPS.md ("What a tracer writes into the process", "Shared
-   libraries"), add the script to `CLAUDE.md` next to the other
-   `check-gaps-*` scripts, and remove the macOS parts below.
+Linux, FreeBSD (VM) and macOS (Apple M1) have run everything in section 1
+they can. Next is Windows:
 
 ### Windows
 
-1. Re-run the attach checks, for the same macro change: elevated Windows
-   PowerShell, `attach-windows.ps1` (spike), with `$env:ATTACH_CRATE =
-   'anyprobe'`, and `attach-windows-attr.ps1`, each with
-   `-ExecutionPolicy Bypass`.
-2. Write `spike/scripts/check-gaps-windows.ps1` and run it elevated:
-   - cdylib: the same scratch `plug` and `host` as a `.dll` loaded with
-     `LoadLibraryW`. A `logman` or `wpr` session on the `plugonly` and
-     `shared` GUIDs (`cargo anyprobe wprp` prints them) must record
-     `plugonly`'s events from the DLL, and `shared` events from both the
-     executable and the DLL. Each module has its own copy of anyprobe's
-     provider table, so `shared` is two ETW registrations of one GUID in
-     one process; check that both are enabled and both reach the trace.
-   - limits: a scratch program fires a native `&str` of 70,000 bytes (the
-     event should be dropped, with no error in the program) and one of
-     65,600 bytes (the field should be cut at 65,535 bytes); decode with
-     `tracerpt` and check each.
+1. Re-run the attach checks. The FreeBSD commit (`e0b81e8`) added
+   `dtrace_name`, `function` and `c_types` to every `define_probe!` input;
+   nothing has attached on Windows since. Elevated Windows PowerShell,
+   `attach-windows.ps1` (spike), with `$env:ATTACH_CRATE = 'anyprobe'`,
+   and `attach-windows-attr.ps1`, each with `-ExecutionPolicy Bypass`.
+2. Run `spike/scripts/check-gaps-windows.ps1` elevated, with
+   `-ExecutionPolicy Bypass`. It was written on macOS and has never run;
+   its scratch crates pass `cargo clippy --target x86_64-pc-windows-msvc`,
+   nothing more. Expect to fix PowerShell 5.1 details on the first run.
+   - cdylib: the scratch `plug` and `host` from `check-gaps-linux.sh` as a
+     `.dll` loaded with `LoadLibraryW`. One `logman` session on the
+     `plugonly` and `shared` GUIDs must record `plugonly`'s events from the
+     DLL, and `shared` events from both the executable and the DLL. Each
+     module has its own copy of anyprobe's provider table, so `shared` is
+     two ETW registrations of one GUID in one process.
+   - limits: a scratch program fires a native `&str` per size from 1,000 to
+     70,000 bytes. `tracelogging_dynamic` cuts a counted string at 65,535
+     bytes, but ETW drops an event over 64 KB including its headers, so a
+     field cut at 65,535 bytes probably never reaches a trace: GAPS.md
+     says the field is cut, and that is likely unobservable. The script
+     checks up to 60,000 bytes arrive whole and 70,000 is dropped, and
+     prints what happened to each size in between; write the largest size
+     that arrives into GAPS.md.
 3. Update GAPS.md ("Shared libraries", "Large native strings and byte
-   slices"), add the script to `CLAUDE.md`, and remove the Windows parts
-   below.
+   slices"), add the script to `CLAUDE.md` next to the other
+   `check-gaps-*` scripts, and remove the Windows parts below.
 
 ## 1. Check what GAPS.md states without a test
 
 Each item is a claim already in the docs. Run it, then keep, reword or move
 the claim.
 
-- [ ] A killed tracer leaves nothing behind, on macOS: `kill -9` a dtrace
-      attached to the `work` example and check that every site is restored
-      and the program reports the probe off. Linux and FreeBSD are done
-      (`check-gaps-linux.sh`, `check-gaps-freebsd.sh`); port the FreeBSD
-      script. Also check whether killing `dtrace -p` kills the program, as
-      it does on FreeBSD. GAPS.md, "What a tracer writes into the process".
-- [ ] A probe in a `cdylib` loaded with `dlopen` / `LoadLibrary` can be
-      traced on macOS (`.dylib`; also checks that dyld registers the
-      library's DOF) and Windows (`.dll`). Linux and FreeBSD are done; on
-      macOS, include one probe name defined in both the executable and the
-      library, which bpftrace cannot attach to on Linux. GAPS.md, "Shared
+- [ ] A probe in a `cdylib` loaded with `LoadLibrary` can be traced on
+      Windows (`.dll`). Linux, FreeBSD and macOS are done. GAPS.md, "Shared
       libraries".
 - [ ] Windows drops an event over 64 KB (a `&str` of 70,000 bytes) and cuts
       a string field at 65,535 bytes. GAPS.md, "Large native strings and
@@ -108,9 +72,6 @@ the claim.
       site instructions in `freebsd.rs`.
 - [ ] FreeBSD startup cost: time the constructor (parse, DOF build, ioctl)
       for a binary with many probes, and add it to `PERFORMANCE.md`.
-- [ ] macOS costs: run `capture-docs-macos.sh` three times and give the
-      median and range per row in `PERFORMANCE.md` (one run so far, with a
-      baseline that moved between 1.2 and 3.1 ns).
 
 ## 3. Open design questions
 
