@@ -287,15 +287,16 @@ try {
                     Copy-Item $xml (Join-Path $KeepTraces "wpr-$p.xml") -Force
                 }
                 $counts = @{}
-                foreach ($e in Get-Events (Get-Content $xml -Raw)) {
+                $decoded = Get-Events (Get-Content $xml -Raw)
+                foreach ($e in $decoded) {
                     $counts[$e.Name] = 1 + $(if ($counts.ContainsKey($e.Name)) { $counts[$e.Name] } else { 0 })
                 }
                 function Count([string] $Name) { if ($counts.ContainsKey($Name)) { $counts[$Name] } else { 0 } }
                 foreach ($want in @(
-                        @('fetch__entry', 2 * $n), @('fetch__return', 2 * $n),
+                        @('fetch__entry', (2 * $n)), @('fetch__return', (2 * $n)),
                         @('slow__entry', $n), @('slow__unwind', $n), @('slow__return', 0),
-                        @('may_panic__entry', $n), @('may_panic__return', $n / 2),
-                        @('may_panic__unwind', $n / 2),
+                        @('may_panic__entry', $n), @('may_panic__return', ($n / 2)),
+                        @('may_panic__unwind', ($n / 2)),
                         @('exported__entry', $n), @('exported__return', $n))) {
                     $got = Count $want[0]
                     Expect "wpr: $($want[0]) $($want[1]) times ($got)" ($got -eq $want[1])

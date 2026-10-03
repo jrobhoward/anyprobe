@@ -857,9 +857,24 @@ Not yet:
 - macOS: `list()` in a linked binary (`section$start`), the DOF
   cross-check, and the generated D scripts under `sudo dtrace -c`
   (`attach-macos-attr.sh`).
-- Windows: `list()` in a linked binary, `cargo anyprobe list` on PE, and
-  `wpr -start` with the generated profile (`attach-windows-attr.ps1`,
-  elevated).
+
+Checked on Windows 11 x86_64 (MSVC, 2026-10-03):
+
+- `list()` in a linked binary (`tests/registry.rs`) and the CLI tests on
+  the test executable, which read the `.aprobe$b` section back through
+  `/OPT:REF`.
+- `cargo anyprobe list` on the release and release-lto `attr` and
+  `attr_async` examples: 8 and 10 probes, all listed.
+- `attach-windows-attr.ps1` (elevated), release and release-lto: every
+  check passes, including `wpr -start` with the profile `cargo anyprobe
+  wprp` wrote, which records exact counts (40 `fetch` entries and returns,
+  20 `slow` unwinds and no return, `may_panic` 20 / 10 / 10, `exported`
+  20 and 20). `attach-windows.ps1` passes for the spike and the `work`
+  example.
+- The script's first run failed in its own count check, not in anyprobe:
+  PowerShell's comma binds tighter than `*` and `/`, and `foreach` over
+  `Get-Events` iterated its wrapper array. Both fixed; the saved trace had
+  the expected 200 events.
 
 ### Deferred
 
