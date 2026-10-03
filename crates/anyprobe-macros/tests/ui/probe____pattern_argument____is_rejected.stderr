@@ -1,0 +1,5 @@
+error: `#[probe]` needs each argument bound to a plain name (or `_`); bind it to a name and destructure it in the body
+ --> tests/ui/probe____pattern_argument____is_rejected.rs:2:8
+  |
+2 | fn sum((a, b): (u32, u32)) -> u32 {
+  |        ^^^^^^

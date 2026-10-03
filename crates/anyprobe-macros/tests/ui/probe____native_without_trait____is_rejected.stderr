@@ -1,0 +1,25 @@
+error[E0277]: `RowId` cannot be passed to a probe as a native value
+ --> tests/ui/probe____native_without_trait____is_rejected.rs:4:8
+  |
+4 | fn hit(row: RowId) {}
+  |        ^^^^^-----
+  |        |    |
+  |        |    required by a bound introduced by this call
+  |        `RowId` does not implement `anyprobe::Native`
+  |
+help: the trait `Native` is not implemented for `RowId`
+ --> tests/ui/probe____native_without_trait____is_rejected.rs:1:1
+  |
+1 | struct RowId(u64);
+  | ^^^^^^^^^^^^
+  = note: implement `anyprobe::Native` for it, or list the argument in `debug(..)` or `serde(..)` instead of `native(..)`
+  = help: the following other types implement trait `Native`:
+            &T
+            &mut T
+            *const T
+            *mut T
+            bool
+            char
+            i16
+            i32
+          and $N others

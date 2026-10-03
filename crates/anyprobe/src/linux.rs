@@ -18,7 +18,6 @@ macro_rules! __anyprobe_define_probe {
     (
         provider: $provider:literal,
         name: $name:literal,
-        etw_provider: $etw:path,
         params: [$($param:ident: $ty:ty),*],
         sdt: $sdt:literal, [$($op:ident = ($opv:expr)),*],
         dtrace: { $($dtrace:tt)* },
@@ -49,13 +48,6 @@ macro_rules! __anyprobe_define_probe {
             $crate::__anyprobe_sdt_site!($provider, $name, SEMAPHORE, $sdt, $($op = in(reg) $opv,)*);
         }
     };
-}
-
-/// Nothing to register on Linux.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __anyprobe_define_provider {
-    ($ident:ident, $name:literal) => {};
 }
 
 /// Emits one SDT probe site: the `nop` the tracer patches, the note that

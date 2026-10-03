@@ -1,0 +1,5 @@
+error: `#[probe]` applies to a function with a body
+ --> tests/ui/probe____on_a_struct____is_rejected.rs:2:1
+  |
+2 | struct Conn;
+  | ^^^^^^

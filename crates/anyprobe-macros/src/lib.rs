@@ -7,6 +7,7 @@
 use proc_macro::TokenStream;
 
 mod args;
+mod attr;
 mod names;
 mod probes;
 
@@ -55,6 +56,7 @@ mod probes;
 /// | `u8`, `u16`, `u32`, `u64`, `usize` | 1, widened to 64 bits |
 /// | `i8`, `i16`, `i32`, `i64`, `isize` | 1, sign-extended to 64 bits |
 /// | `bool` | 1 (0 or 1) |
+/// | `char` | 1, the code point |
 /// | `*const T`, `*mut T` | 1, the address |
 /// | `&str`, `&[u8]` | 2: pointer and length |
 ///
@@ -67,4 +69,62 @@ pub fn probes(input: TokenStream) -> TokenStream {
     probes::expand(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+/// Probes a function's entry and return.
+///
+/// ```
+/// #[anyprobe::probe(provider = "myapp")]
+/// fn parse_request(id: u64, path: &str) -> u32 {
+///     // ...
+/// #   path.len() as u32
+/// }
+/// # parse_request(1, "/");
+/// ```
+///
+/// defines the probes `myapp:parse_request__entry(id, path)` and
+/// `myapp:parse_request__return()`. The function checks whether each probe
+/// is enabled and encodes its arguments only if it is; with no tracer
+/// attached the cost is the two checks. `return` and `?` in the body work as
+/// before.
+///
+/// # Options
+///
+/// - `name = "..."`: the probes' base name; the default is the function's
+///   name. Methods have no access to their type's name, so two methods named
+///   `new` share probe names unless one sets `name`.
+/// - `provider = "..."`: the default is the crate name. The rules are those
+///   of [`probes!`](macro@probes).
+/// - `serde(a, b)`: encode these arguments as JSON (needs the `serde`
+///   feature, on by default).
+/// - `debug(a, b)`: encode these arguments with `{:?}`.
+/// - `skip(a, b)`: leave these arguments out.
+/// - `native(a, b)`: pass these as one 64-bit value each, through
+///   `anyprobe::Native`; for type aliases and newtypes.
+/// - `ret = native | serde | debug`: pass the return value to the return
+///   probe. Without `ret` the return probe has no arguments.
+///
+/// # Arguments
+///
+/// An argument not listed in an option is passed natively if its type is
+/// written as one of the [`probes!`](macro@probes) types, `char`, a reference
+/// to one of the scalar ones (passed by value), `&mut str` or `&mut [u8]`.
+/// Any other unlisted argument is a compile error naming the fixes, or, with
+/// the `autoref` feature, is encoded as JSON if it implements `Serialize`,
+/// otherwise with `{:?}`. `self` is left out unless listed in `debug(self)`
+/// or `serde(self)`, and so is an argument named `_`.
+///
+/// Encoded values reach the tracer as a string (pointer and length),
+/// followed by a NUL byte, and are cut at 4096 bytes. When the arguments
+/// would take more than six values (`&str`, `&[u8]` and encoded arguments
+/// take two), they are passed instead as one JSON object of all of them,
+/// `{"id":1,"path":"/x",...}`.
+///
+/// # Not supported
+///
+/// `async fn`, `const fn`, functions returning `!`, `#[track_caller]`, and
+/// arguments bound by a pattern other than a name or `_`.
+#[proc_macro_attribute]
+pub fn probe(attr: TokenStream, item: TokenStream) -> TokenStream {
+    attr::expand(attr.into(), item.into()).into()
 }

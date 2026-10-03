@@ -12,10 +12,10 @@ are not computed. Every other target compiles probes to nothing. FreeBSD is
 deferred indefinitely; it gets the no-op backend.
 
 The crate is pre-1.0. `docs/PLAN.md` holds the design, the phases and the
-open questions; read it before changing anything structural. Phase 1 (the
-`probes!` macro and the runtime) is in place; phase 2 adds the `#[probe]`
-attribute, `serde`/`debug` encoding and the `autoref` feature. Commands below
-that name those features apply once they exist.
+open questions; read it before changing anything structural. Phases 1 (the
+`probes!` macro and the runtime) and 2 (the `#[probe]` attribute,
+`serde`/`debug` encoding and the `autoref` feature) are in place; phase 3
+adds `async fn`, `unwind` and `symbol`.
 
 ## Commands
 
@@ -25,12 +25,17 @@ cargo build --workspace --all-targets
 
 # Test
 cargo test --workspace
-cargo test -p anyprobe-macros --test ui           # trybuild compile-fail tests only
+cargo test -p anyprobe-macros --test ui           # trybuild: inputs rejected under any features
+cargo test -p anyprobe --test ui                  # trybuild: rejections that depend on features
 cargo test some____test____name                   # single test
 
 # trybuild: regenerate expected .stderr after an intended diagnostic change,
-# then review the diff before committing it.
+# then review the diff before committing it. The `anyprobe` cases run once
+# per feature set, since each set picks different case directories.
 TRYBUILD=overwrite cargo test -p anyprobe-macros --test ui
+for f in "" "--no-default-features" "--features autoref"; do
+  TRYBUILD=overwrite cargo test -p anyprobe --test ui $f
+done
 
 # Lint (must be clean before any change is considered done). CI runs the
 # latest stable clippy, which adds lints with each release; a local toolchain
@@ -62,9 +67,8 @@ for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin
   cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t || break
 done
 
-# Feature combinations (phase 2: the features do not exist yet). A `cfg` gated
-# on a feature is only compiled in the sets that enable it, so a default build
-# proves nothing about the others.
+# Feature combinations. A `cfg` gated on a feature is only compiled in the
+# sets that enable it, so a default build proves nothing about the others.
 for f in "" "--no-default-features" "--features autoref" \
          "--no-default-features --features autoref" "--all-features"; do
   cargo clippy --workspace --all-targets $f -- -Dwarnings || break
@@ -87,6 +91,7 @@ done
 # elevated prompt. On macOS, SPIKE_ATTACH=0 runs only the checks that need no
 # root, and SPIKE_TARGET=x86_64-apple-darwin checks an Intel build.
 spike/scripts/attach-linux.sh            # bpftrace
+spike/scripts/attach-linux-attr.sh       # bpftrace on `#[probe]`, every encoding
 spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
 # SystemTap (not in CI) needs file offsets equal to addresses, which rust-lld
 # does not produce by default; STAP picks a stap newer than the distro's.
@@ -112,17 +117,25 @@ cargo +1.88.0 check --workspace --all-targets
 See `docs/PLAN.md` for the design. Summary a contributor needs day to day:
 
 - Cargo workspace, edition 2024, `rust-version = 1.88.0`.
-- `crates/anyprobe-macros`: the `probes!` proc macro (phase 2 adds
-  `#[probe]`). Target-independent: it validates the input, computes every
-  string each backend needs (SDT argument format, DTrace symbol names, ETW
-  field calls, register assignments) and emits one
-  `::anyprobe::__private::define_probe!` per probe. Its compile-fail
-  behaviour is pinned by trybuild tests in `crates/anyprobe-macros/tests/ui/`.
+- `crates/anyprobe-macros`: the `probes!` proc macro (`probes.rs`) and the
+  `#[probe]` attribute (`attr.rs`). Target-independent: they validate the
+  input, compute every string each backend needs (SDT argument format,
+  DTrace symbol names, ETW field calls, register assignments) and emit one
+  `::anyprobe::__private::define_probe!` per probe. `#[probe]` puts its two
+  probe modules and their `#[cold]` helpers inside the function body, and
+  runs the body through `__private::call_once`. Compile-fail behaviour is
+  pinned by trybuild tests in `crates/anyprobe-macros/tests/ui/`, and, for
+  rejections that depend on `anyprobe`'s features, in
+  `crates/anyprobe/tests/ui/`.
 - `crates/anyprobe`: the facade and runtime. One `cfg`-selected backend module
   per platform (`linux.rs`, `macos.rs`, `windows.rs`, `noop.rs`), each
   defining the `macro_rules!` that `define_probe!` resolves to. All `asm!` and
   `unsafe` live here, not in proc-macro output. `windows.rs` also holds the
-  ETW provider runtime.
+  ETW provider runtime, which shares one registration per provider name
+  across the process. `encode.rs` writes `serde`/`debug` values into a
+  thread-local buffer; `native.rs` is the public `Native` trait. The
+  `serde`/`autoref` compile errors are `macro_rules!` in `lib.rs`, outside
+  any backend, so they fire on every target.
 - `crates/anyprobe-check` (unpublished): one probe per argument kind, so a
   library build reaches every backend's codegen.
 - `spike/` (`anyprobe-spike`, unpublished): the phase-0 hand-written probes,
@@ -160,7 +173,17 @@ work in front of the check, even for a "cheap" type.
 off must encode identically with it on, because Cargo unifies features across
 the dependency graph and one crate enabling it changes the build for every
 other. A change that makes `autoref` alter an encoding that already compiled
-without it is a bug, whatever it fixes.
+without it is a bug, whatever it fixes. For the same reason `autoref` implies
+`serde` (else a second crate enabling `serde` would switch autoref's choice
+from `Debug` to JSON), and an omitted `ret` means no payload with or without
+`autoref`.
+
+**Workspace members depend on `anyprobe` with `default-features = false`.**
+A member (or dev-dependency) that takes the defaults turns `serde` back on
+for the whole workspace, and `--no-default-features` then builds nothing
+without it. `anyprobe-check` mirrors the features instead. trybuild forwards
+only the features of the crate under test, which is why feature-dependent
+compile-fail cases live in `crates/anyprobe/tests/ui/`.
 
 **Exported symbols use `#[unsafe(export_name = ...)]`.** Edition 2024 rejects
 the bare form in generated code. The `symbol` option refuses generic fns,
@@ -312,7 +335,8 @@ mod encode_tests;
 ```
 Integration tests live in each crate's `tests/`. Compile-fail tests live in
 `crates/anyprobe-macros/tests/ui/`, one case per `.rs` file with its expected
-`.stderr` beside it.
+`.stderr` beside it; cases whose result depends on `anyprobe`'s features live
+in `crates/anyprobe/tests/ui/<feature-set>/`.
 
 **Test naming:** `subject____condition____result` — exactly four underscores
 between segments. Because consecutive underscores trip `non_snake_case`, every

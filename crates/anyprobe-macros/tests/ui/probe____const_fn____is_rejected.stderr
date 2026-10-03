@@ -1,0 +1,5 @@
+error: `#[probe]` does not support `const fn`: a probe cannot run at compile time
+ --> tests/ui/probe____const_fn____is_rejected.rs:2:1
+  |
+2 | const fn double(x: u32) -> u32 {
+  | ^^^^^

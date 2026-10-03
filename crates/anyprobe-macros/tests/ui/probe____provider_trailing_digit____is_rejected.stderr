@@ -1,0 +1,5 @@
+error: provider name `http2` must not end with a digit: DTrace appends the pid to it
+ --> tests/ui/probe____provider_trailing_digit____is_rejected.rs:1:30
+  |
+1 | #[anyprobe::probe(provider = "http2")]
+  |                              ^^^^^^^

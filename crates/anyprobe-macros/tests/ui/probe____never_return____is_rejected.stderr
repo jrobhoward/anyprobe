@@ -1,0 +1,5 @@
+error: `#[probe]` does not support functions returning `!`: they never return
+ --> tests/ui/probe____never_return____is_rejected.rs:2:23
+  |
+2 | fn fail(code: i32) -> ! {
+  |                       ^

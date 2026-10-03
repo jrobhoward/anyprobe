@@ -49,15 +49,10 @@ fn expand____empty_block____emits_nothing() {
 }
 
 #[test]
-fn expand____probe____defines_provider_and_module() {
+fn expand____probe____defines_a_module_with_its_visibility() {
     let out = expand_str("provider = \"app\"; pub fn hit(id: u64, path: &str);").unwrap();
-    assert!(out.contains("mod __anyprobe_hit"), "{out}");
-    assert!(
-        out.contains("define_provider ! (__ANYPROBE_PROVIDER , \"app\")"),
-        "{out}"
-    );
     assert!(out.contains("pub mod hit"), "{out}");
-    assert!(out.contains("pub use __anyprobe_hit :: hit ;"), "{out}");
+    assert!(out.contains("provider : \"app\" , name : \"hit\""), "{out}");
     assert!(out.contains("params : [id : u64 , path : & str]"), "{out}");
     assert!(out.contains("sdt : \"8@{a0} 8@{a1} 8@{a2}\""), "{out}");
     assert!(out.contains("\"x0\" = (id as u64)"), "{out}");

@@ -1,0 +1,5 @@
+error: `self` cannot be `native`; use `debug(self)` or `serde(self)`
+ --> tests/ui/probe____native_self____is_rejected.rs:4:46
+  |
+4 |     #[anyprobe::probe(provider = "t", native(self))]
+  |                                              ^^^^

@@ -1,0 +1,7 @@
+error: `serde(opts)` needs the "serde" feature of anyprobe, which is off
+ --> tests/ui/no-serde/serde____feature_off____is_rejected.rs:4:41
+  |
+4 | #[anyprobe::probe(provider = "t", serde(opts))]
+  |                                         ^^^^
+  |
+  = note: this error originates in the macro `::anyprobe::__private::serde_value` (in Nightly builds, run with -Z macro-backtrace for more info)

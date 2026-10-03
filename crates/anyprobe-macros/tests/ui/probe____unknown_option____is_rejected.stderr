@@ -1,0 +1,13 @@
+error: unknown option; expected `name`, `provider`, `serde(..)`, `debug(..)`, `skip(..)`, `native(..)` or `ret`
+ --> tests/ui/probe____unknown_option____is_rejected.rs:1:35
+  |
+1 | #[anyprobe::probe(provider = "t", json(x))]
+  |                                   ^^^^
+
+warning: unused variable: `x`
+ --> tests/ui/probe____unknown_option____is_rejected.rs:2:8
+  |
+2 | fn hit(x: u64) {}
+  |        ^ help: if this is intentional, prefix it with an underscore: `_x`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default

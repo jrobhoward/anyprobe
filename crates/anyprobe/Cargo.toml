@@ -17,14 +17,26 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 rustdoc-args = ["--cfg", "docsrs"]
+all-features = true
 
 [lints]
 workspace = true
+
+[features]
+default = ["serde"]
+# `serde(...)` encoding in `#[probe]`, as JSON.
+serde = ["dep:serde", "dep:serde_json"]
+# Arguments `#[probe]` does not list pick `Serialize`, then `Debug`. Implies
+# `serde`: with `serde` optional, a second crate enabling it would switch an
+# argument from `Debug` to JSON, so the order would depend on the build graph.
+autoref = ["serde"]
 
 [dependencies]
 # Exact: generated code calls `anyprobe::__private`, which is not covered by
 # semver, so the macro and the runtime are released in lockstep.
 anyprobe-macros = { version = "=0.1.0", path = "../anyprobe-macros" }
+serde = { version = "1.0.200", optional = true, default-features = false, features = ["std"] }
+serde_json = { version = "1.0.120", optional = true, default-features = false, features = ["std"] }
 
 # Microsoft's TraceLogging without macros. The `tracelogging` crate's macros
 # expand to `::tracelogging::...` paths, which would make every user add it as
@@ -36,6 +48,14 @@ tracelogging_dynamic = "1.2"
 # 0.5, not 0.8: 0.8 builds a C dependency (`alloca`) unconditionally, which
 # breaks `cargo clippy --all-targets --target ...` for every cross target.
 criterion = { version = "0.5", default-features = false }
+serde = { version = "1", features = ["derive"] }
+# Compile-fail tests whose result depends on this crate's features, which
+# trybuild forwards only for the crate under test.
+trybuild = "1"
+
+[[example]]
+name = "attr"
+required-features = ["serde"]
 
 [[bench]]
 name = "disabled_cost"

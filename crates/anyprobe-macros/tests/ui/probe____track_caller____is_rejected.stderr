@@ -1,0 +1,5 @@
+error: `#[probe]` does not support `#[track_caller]`: the body runs in a closure, which would report its own location rather than the caller's
+ --> tests/ui/probe____track_caller____is_rejected.rs:2:1
+  |
+2 | #[track_caller]
+  | ^

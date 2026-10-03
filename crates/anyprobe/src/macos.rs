@@ -27,7 +27,6 @@ macro_rules! __anyprobe_define_probe {
     (
         provider: $provider:literal,
         name: $name:literal,
-        etw_provider: $etw:path,
         params: [$($param:ident: $ty:ty),*],
         sdt: $sdt:literal, [$($sdt_op:tt)*],
         dtrace: {
@@ -79,13 +78,6 @@ macro_rules! __anyprobe_define_probe {
             );
         }
     };
-}
-
-/// Nothing to register on macOS: dyld registers the DOF ld64 built.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __anyprobe_define_provider {
-    ($ident:ident, $name:literal) => {};
 }
 
 /// An is-enabled check as a bare call instruction rather than a Rust call.

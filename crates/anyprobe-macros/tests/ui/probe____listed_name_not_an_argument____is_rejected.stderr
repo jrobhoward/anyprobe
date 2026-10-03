@@ -1,0 +1,13 @@
+error: no argument named `conn`
+ --> tests/ui/probe____listed_name_not_an_argument____is_rejected.rs:1:40
+  |
+1 | #[anyprobe::probe(provider = "t", skip(conn))]
+  |                                        ^^^^
+
+warning: unused variable: `id`
+ --> tests/ui/probe____listed_name_not_an_argument____is_rejected.rs:2:8
+  |
+2 | fn hit(id: u64) {}
+  |        ^^ help: if this is intentional, prefix it with an underscore: `_id`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default

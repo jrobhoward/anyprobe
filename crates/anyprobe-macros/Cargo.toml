@@ -20,6 +20,7 @@ syn = { version = "2", features = ["full"] }
 
 [dev-dependencies]
 # Compile-fail tests for every input the macro rejects. They expand through
-# the `anyprobe` facade, as users do.
-anyprobe = { path = "../anyprobe" }
+# the `anyprobe` facade, as users do. Default features off, so that
+# `--no-default-features` on the workspace builds anyprobe without them.
+anyprobe = { path = "../anyprobe", default-features = false }
 trybuild = "1"

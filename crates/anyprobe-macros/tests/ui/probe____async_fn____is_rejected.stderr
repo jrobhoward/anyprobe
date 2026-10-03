@@ -1,0 +1,5 @@
+error: `#[probe]` does not support `async fn` yet
+ --> tests/ui/probe____async_fn____is_rejected.rs:2:1
+  |
+2 | async fn handle(id: u64) -> u64 {
+  | ^^^^^

@@ -1,12 +1,18 @@
 //! Windows: ETW TraceLogging.
 //!
-//! Each `probes!` block defines one provider, named after the probe provider;
-//! its GUID is the standard TraceLogging hash of that name, so it is the same
-//! in every build. Each probe is an event of the same name at level Verbose.
+//! Each probe provider is one ETW provider of the same name; its GUID is the
+//! standard TraceLogging hash of that name, so it is the same in every build.
+//! Each probe is an event of the same name at level Verbose.
 //!
-//! The enabled check is one load of an atomic flag that the provider's enable
-//! callback keeps current. The provider registers itself on the first check of
-//! any of its probes, so nothing runs at startup; see [`etw::Provider`].
+//! Providers are shared by name across the process: every probe naming the
+//! provider `myapp`, from any `probes!` block or `#[probe]` function in any
+//! crate, uses one ETW registration. ETW limits registrations per process, so
+//! one per probe site would not scale.
+//!
+//! The enabled check is one load of the probe's own flag. The first check
+//! attaches the probe to its provider, registering the provider if no probe
+//! has yet; from then on the provider's enable callback keeps the flag
+//! current. Nothing runs at startup. See [`etw::Probe`].
 
 pub(crate) const NAME: &str = "windows-etw";
 
@@ -17,7 +23,6 @@ macro_rules! __anyprobe_define_probe {
     (
         provider: $provider:literal,
         name: $name:literal,
-        etw_provider: $etw:path,
         params: [$($param:ident: $ty:ty),*],
         sdt: $sdt:literal, [$($sdt_op:tt)*],
         dtrace: { $($dtrace:tt)* },
@@ -28,17 +33,19 @@ macro_rules! __anyprobe_define_probe {
         /// The probe's name.
         pub const NAME: &str = $name;
 
+        static PROBE: $crate::__private::etw::Probe = $crate::__private::etw::Probe::new($provider);
+
         /// Whether an ETW session is listening to this probe.
         #[inline(always)]
         #[must_use]
         pub fn enabled() -> bool {
-            $etw.enabled()
+            PROBE.enabled()
         }
 
         /// Writes the probe's event.
         #[inline(always)]
         pub fn fire($($param: $ty),*) {
-            $etw.write($name, |_event| {
+            PROBE.write($name, |_event| {
                 $(
                     _event.$method(
                         $field,
@@ -52,142 +59,99 @@ macro_rules! __anyprobe_define_probe {
     };
 }
 
-/// Defines the provider static a `probes!` block's probes share.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __anyprobe_define_provider {
-    ($ident:ident, $name:literal) => {
-        #[doc(hidden)]
-        static $ident: $crate::__private::etw::Provider = {
-            extern "C" fn unregister() {
-                $ident.unregister();
-            }
-            $crate::__private::etw::Provider::new($name, unregister)
-        };
-    };
-}
-
 pub mod etw {
     //! The ETW provider runtime behind generated code.
 
     use core::pin::Pin;
-    use core::sync::atomic::{AtomicU8, Ordering};
+    use core::ptr;
+    use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
     use std::cell::RefCell;
-    use std::sync::{Once, OnceLock};
+    use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
 
     pub use tracelogging_dynamic::OutType;
     use tracelogging_dynamic::{EventBuilder, Guid, Level};
 
     const OFF: u8 = 0;
     const ON: u8 = 1;
-    const UNREGISTERED: u8 = 2;
+    const DETACHED: u8 = 2;
 
     unsafe extern "C" {
         fn atexit(callback: extern "C" fn()) -> core::ffi::c_int;
     }
 
-    /// One ETW provider, registered lazily.
+    /// One probe: an event in a provider, and whether a session listens.
     ///
     /// `state` answers the enabled check in one load: off, on, or not yet
-    /// registered. The first check that sees "not yet registered" registers
-    /// the provider. ETW reports sessions already listening as the provider
-    /// registers, so a session started earlier still takes effect; the enable
-    /// callback keeps `state` current from then on. The provider is invisible
-    /// to ETW until that first check.
-    pub struct Provider {
-        name: &'static str,
+    /// attached to its provider. The first check that sees "not yet attached"
+    /// attaches it. The provider's enable callback keeps `state` current from
+    /// then on. ETW reports sessions already listening as a provider
+    /// registers, so a session started before the first check still enables
+    /// the probe.
+    pub struct Probe {
+        provider_name: &'static str,
         state: AtomicU8,
         once: Once,
-        provider: OnceLock<tracelogging_dynamic::Provider>,
-        on_exit: extern "C" fn(),
+        provider: AtomicPtr<Provider>,
     }
 
-    impl core::fmt::Debug for Provider {
+    impl core::fmt::Debug for Probe {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.debug_struct("Provider")
-                .field("name", &self.name)
+            f.debug_struct("Probe")
+                .field("provider", &self.provider_name)
                 .field("state", &self.state.load(Ordering::Relaxed))
                 .finish_non_exhaustive()
         }
     }
 
-    impl Provider {
-        /// A provider named `name`. `on_exit` must call [`Provider::unregister`]
-        /// on this provider; it is registered with `atexit` when the provider
-        /// registers, as `tracelogging_dynamic` requires for providers in DLLs.
+    impl Probe {
+        /// A probe in the provider named `provider`.
         #[must_use]
-        pub const fn new(name: &'static str, on_exit: extern "C" fn()) -> Self {
-            Provider {
-                name,
-                state: AtomicU8::new(UNREGISTERED),
+        pub const fn new(provider: &'static str) -> Self {
+            Probe {
+                provider_name: provider,
+                state: AtomicU8::new(DETACHED),
                 once: Once::new(),
-                provider: OnceLock::new(),
-                on_exit,
+                provider: AtomicPtr::new(ptr::null_mut()),
             }
         }
 
-        /// Whether any session is listening at level Verbose.
+        /// Whether any session is listening to the provider at level Verbose.
         #[inline(always)]
         #[must_use]
         pub fn enabled(&'static self) -> bool {
             match self.state.load(Ordering::Relaxed) {
                 OFF => false,
                 ON => true,
-                _ => self.register(),
+                _ => self.attach(),
             }
         }
 
         #[cold]
         #[inline(never)]
-        fn register(&'static self) -> bool {
-            self.once.call_once(|| {
-                let mut options = tracelogging_dynamic::Provider::options();
-                options.callback(callback, self as *const Self as usize);
-                let provider = self
-                    .provider
-                    .get_or_init(|| tracelogging_dynamic::Provider::new(self.name, &options));
-                // SAFETY: the provider is in a `static`, so it never moves and
-                // is never dropped. `register` requires a provider in a DLL to
-                // be unregistered before the DLL unloads: `on_exit`, registered
-                // with `atexit` below, does that, and in a DLL the CRT runs
-                // `atexit` handlers at unload.
-                let rc = unsafe { Pin::static_ref(provider).register() };
-                if rc == 0 {
-                    // SAFETY: `on_exit` is a plain `extern "C" fn()` that
-                    // unregisters a static provider.
-                    unsafe { atexit(self.on_exit) };
-                    let now = if provider.enabled(Level::Verbose, 0) {
-                        ON
-                    } else {
-                        OFF
-                    };
-                    // The enable callback may already have stored a newer
-                    // state; only replace "not yet registered".
-                    let _ = self.state.compare_exchange(
-                        UNREGISTERED,
-                        now,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    );
-                } else {
-                    self.state.store(OFF, Ordering::Relaxed);
-                }
-            });
+        fn attach(&'static self) -> bool {
+            self.once
+                .call_once(|| match Provider::get(self.provider_name) {
+                    Some(provider) => {
+                        self.provider
+                            .store(ptr::from_ref(provider).cast_mut(), Ordering::Release);
+                        provider.add(&self.state);
+                    }
+                    None => self.state.store(OFF, Ordering::Relaxed),
+                });
             self.state.load(Ordering::Relaxed) == ON
-        }
-
-        /// Unregisters the provider; its probes stay disabled afterwards.
-        pub fn unregister(&self) {
-            self.state.store(OFF, Ordering::Relaxed);
-            if let Some(provider) = self.provider.get() {
-                provider.unregister();
-            }
         }
 
         /// Writes one event named `name`; `fields` adds its fields.
         #[inline(never)]
         pub fn write(&'static self, name: &str, fields: impl FnOnce(&mut EventBuilder)) {
-            let Some(provider) = self.provider.get() else {
+            let provider = self.provider.load(Ordering::Acquire);
+            if provider.is_null() {
+                return;
+            }
+            // SAFETY: a non-null pointer was stored from a `&'static Provider`
+            // in `attach`; providers are leaked and never freed.
+            let provider = unsafe { &*provider };
+            let Some(inner) = provider.inner.get() else {
                 return;
             };
             thread_local! {
@@ -199,9 +163,79 @@ pub mod etw {
                 if let Ok(mut event) = event.try_borrow_mut() {
                     event.reset(name, Level::Verbose, 0, 0);
                     fields(&mut event);
-                    event.write(provider, None, None);
+                    event.write(inner, None, None);
                 }
             });
+        }
+    }
+
+    /// One registered ETW provider, shared by every probe naming it.
+    struct Provider {
+        name: &'static str,
+        inner: OnceLock<tracelogging_dynamic::Provider>,
+        /// The `state` of every probe attached to this provider.
+        probes: Mutex<Vec<&'static AtomicU8>>,
+    }
+
+    /// Every provider registered in this process. Providers are leaked: ETW
+    /// holds their address until they unregister, at exit.
+    static PROVIDERS: Mutex<Vec<&'static Provider>> = Mutex::new(Vec::new());
+
+    fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    impl Provider {
+        /// The provider named `name`, registered on first use. `None` if ETW
+        /// refused the registration.
+        fn get(name: &'static str) -> Option<&'static Provider> {
+            let mut providers = lock(&PROVIDERS);
+            if let Some(p) = providers.iter().find(|p| p.name == name) {
+                return Some(*p);
+            }
+            let provider: &'static Provider = Box::leak(Box::new(Provider {
+                name,
+                inner: OnceLock::new(),
+                probes: Mutex::new(Vec::new()),
+            }));
+            let mut options = tracelogging_dynamic::Provider::options();
+            options.callback(callback, ptr::from_ref(provider) as usize);
+            let inner = tracelogging_dynamic::Provider::new(name, &options);
+            let inner = provider.inner.get_or_init(|| inner);
+            // SAFETY: `inner` is inside a leaked allocation, so it never moves
+            // and is never dropped. `register` requires a provider in a DLL to
+            // be unregistered before the DLL unloads: `unregister_all`,
+            // registered with `atexit` below, does that, and in a DLL the CRT
+            // runs `atexit` handlers at unload. The enable callback may run
+            // during `register`; it locks only this provider's `probes`, not
+            // `PROVIDERS`, which is held here.
+            let rc = unsafe { Pin::static_ref(inner).register() };
+            if rc != 0 {
+                // Left out of `PROVIDERS`, so the next probe naming it
+                // tries again.
+                return None;
+            }
+            providers.push(provider);
+            static AT_EXIT: Once = Once::new();
+            AT_EXIT.call_once(|| {
+                // SAFETY: `unregister_all` is a plain `extern "C" fn()`.
+                unsafe { atexit(unregister_all) };
+            });
+            Some(provider)
+        }
+
+        fn listening(&self) -> bool {
+            self.inner
+                .get()
+                .is_some_and(|inner| inner.enabled(Level::Verbose, 0))
+        }
+
+        /// Attaches a probe's `state`, setting it to the provider's current
+        /// state. Under the same lock as the callback, so no change is lost.
+        fn add(&self, state: &'static AtomicU8) {
+            let mut probes = lock(&self.probes);
+            state.store(if self.listening() { ON } else { OFF }, Ordering::Relaxed);
+            probes.push(state);
         }
     }
 
@@ -214,18 +248,34 @@ pub mod etw {
         _filter_data: usize,
         context: usize,
     ) {
-        // SAFETY: `context` is the address of a `static Provider`, set in
-        // `Provider::register`.
+        // SAFETY: `context` is the address of a leaked `Provider`, set in
+        // `Provider::get`.
         let this = unsafe { &*(context as *const Provider) };
         // `tracelogging_dynamic` updates its own level and keywords before
-        // calling this, so `enabled` already reflects the change.
-        if let Some(provider) = this.provider.get() {
-            let now = if provider.enabled(Level::Verbose, 0) {
-                ON
-            } else {
-                OFF
-            };
-            this.state.store(now, Ordering::Relaxed);
+        // calling this, so `listening` already reflects the change.
+        let probes = lock(&this.probes);
+        let now = if this.listening() { ON } else { OFF };
+        for state in probes.iter() {
+            state.store(now, Ordering::Relaxed);
+        }
+    }
+
+    /// Unregisters every provider at exit; their probes stay off afterwards.
+    /// Skips the work if another thread holds the lock, since at exit that
+    /// thread may never release it.
+    extern "C" fn unregister_all() {
+        let Ok(providers) = PROVIDERS.try_lock() else {
+            return;
+        };
+        for provider in providers.iter() {
+            if let Ok(probes) = provider.probes.try_lock() {
+                for state in probes.iter() {
+                    state.store(OFF, Ordering::Relaxed);
+                }
+            }
+            if let Some(inner) = provider.inner.get() {
+                inner.unregister();
+            }
         }
     }
 

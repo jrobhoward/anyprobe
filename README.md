@@ -13,23 +13,34 @@ attached, a probe costs one enabled check and its arguments are not computed.
 | Windows | ETW TraceLogging | WPR, PerfView, logman |
 | anything else, FreeBSD included | none; probes compile to nothing | none |
 
-Status: pre-release. What exists today is `probes!`, which defines probes that
-code checks and fires explicitly, as in the example below. A
-`#[anyprobe::probe]` attribute is planned that probes a function's entry and
-return with nothing added to its body:
+Status: pre-release.
 
-```rust,ignore
-#[anyprobe::probe]
-fn handle(id: u64, path: &str) {
+## Example
+
+`#[anyprobe::probe]` probes a function's entry and return:
+
+```rust
+#[derive(Debug)]
+struct Options {
+    verbose: bool,
+}
+
+#[anyprobe::probe(provider = "myapp", debug(opts), ret = native)]
+fn handle(id: u64, path: &str, opts: &Options) -> u32 {
     // ...
+    0
 }
 ```
 
-The attribute will generate the enabled checks and `fire` calls, and encode
-other argument types with `serde` or `Debug`. `probes!` stays for probes in
-the middle of a function. The design is in [docs/PLAN.md](docs/PLAN.md).
+This defines the probes `myapp:handle__entry(id, path, opts)` and
+`myapp:handle__return(ret)`. Integers, `bool`, `char`, raw pointers, `&str`
+and `&[u8]` are passed as they are. Other arguments are listed in
+`debug(..)` (encoded with `{:?}`), `serde(..)` (encoded as JSON) or
+`skip(..)`; an unlisted one is a compile error that names these fixes. The
+`autoref` feature picks an encoding for unlisted arguments instead. Encoding
+runs only while a tracer is attached.
 
-## Example
+`probes!` defines probes to fire from anywhere in a function:
 
 ```rust
 anyprobe::probes! {
@@ -48,12 +59,12 @@ fn handle(id: u64, path: &str) {
 ```
 
 Each probe becomes a module with `enabled()` and `fire(...)`. Keep anything
-that costs time to compute inside the `enabled()` branch.
+that costs time to compute inside the `enabled()` branch. `probes!` takes
+the native types only, up to six values per probe (`&str` and `&[u8]` count
+as two: pointer and length).
 
-Arguments are `u8` to `u64`, `usize`, `i8` to `i64`, `isize`, `bool`, raw
-pointers, `&str` and `&[u8]`, up to six values per probe (`&str` and `&[u8]`
-count as two: pointer and length). The provider defaults to the crate name;
-DTrace does not allow one that ends in a digit.
+The provider defaults to the crate name. DTrace does not allow one that ends
+in a digit, so a crate named like `http2` sets `provider = "..."`.
 
 ## Attaching
 
@@ -77,7 +88,21 @@ first time any of its probes is checked.
 Select probes by provider and probe name. DTrace also reports the containing
 function, but that is the mangled Rust symbol and changes between builds.
 
+An encoded argument (`debug`, `serde`, or arguments combined into one JSON
+object) is a string: a pointer and a length, followed by a NUL byte. bpftrace
+reads it with `str(ptr, len)`, dtrace with `copyinstr(ptr, len)`; perf and
+gdb read it as a NUL-terminated string. Encoded values are cut at 4096
+bytes, and bpftrace reads 64 by default (`BPFTRACE_MAX_STRLEN`). A native
+`&str` has no NUL after it, so perf and gdb do not read one correctly.
+
 ## Caveats
+
+- `#[probe]` runs the function's body in a closure to capture the return
+  value. It does not support `async fn` yet, `const fn`, functions that
+  return `!`, or `#[track_caller]`.
+- Methods are named after the function, so two methods named `new` share
+  probe names unless one sets `name = "..."`. On macOS two probes with the
+  same name and different argument types conflict.
 
 - macOS: `sudo dtrace` attaches with System Integrity Protection on, for
   binaries that are not signed with the hardened runtime.

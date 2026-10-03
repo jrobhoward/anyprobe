@@ -8,6 +8,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `#[probe]`: probes a function's entry and return (`name__entry`,
+  `name__return`). Options: `name`, `provider`, `serde(..)`, `debug(..)`,
+  `skip(..)`, `native(..)` and `ret = native | serde | debug`. Integers,
+  `bool`, `char`, raw pointers, `&str`, `&[u8]` and references to scalars
+  are passed natively; any other argument must be listed. Encoded values are
+  NUL-terminated strings, cut at 4096 bytes. Arguments that would take more
+  than six values are passed as one JSON object.
+- `Native`: lets `native(..)` pass a type alias or newtype as one 64-bit
+  value.
+- Features: `serde` (default) for JSON encoding; `autoref` to encode unlisted
+  arguments as JSON or `{:?}` instead of rejecting them.
+- `probes!` accepts `char`.
+- Windows: probes share one ETW registration per provider name across the
+  process, instead of one per `probes!` block.
 - `probes!`: defines probes, each a module with `enabled()` and `fire(...)`.
   Arguments are integers up to 64 bits, `bool`, raw pointers, `&str` and
   `&[u8]`, at most six values per probe. The provider defaults to the crate

@@ -1,0 +1,5 @@
+error: expected `ret = native`, `ret = serde` or `ret = debug`
+ --> tests/ui/probe____ret_unknown_mode____is_rejected.rs:1:41
+  |
+1 | #[anyprobe::probe(provider = "t", ret = json)]
+  |                                         ^^^^

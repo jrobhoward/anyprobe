@@ -32,6 +32,13 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -Dwarnings
+      # The other feature sets. Code under `cfg(feature)` is only compiled
+      # where it is enabled, and the compile-fail tests in
+      # `crates/anyprobe/tests/ui/` pick their cases by feature.
+      - run: cargo clippy --workspace --all-targets --no-default-features -- -Dwarnings
+      - run: cargo clippy --workspace --all-targets --features autoref -- -Dwarnings
+      - run: cargo test --workspace --no-default-features
+      - run: cargo test --workspace --features autoref
       # Scoped to this step: a broken intra-doc link should fail, a warning
       # inside a dependency should not.
       - run: cargo doc --workspace --no-deps
@@ -163,7 +170,8 @@ jobs:
   # Attach bpftrace to the running program. Passing means: the semaphore
   # flipped inside the process when bpftrace attached and back when it
   # detached, and bpftrace read the arguments from every site. `crate` picks
-  # the spike or the anyprobe crate's `work` example (same probes).
+  # the spike or the anyprobe crate's `work` example (same probes); the
+  # anyprobe rows also check `#[probe]` with the `attr` example.
   spike-linux:
     name: attach / ${{ matrix.crate }} / ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}
@@ -181,6 +189,10 @@ jobs:
         run: bash spike/scripts/attach-linux.sh ${{ matrix.profile }}
         env:
           ATTACH_CRATE: ${{ matrix.crate }}
+      # `#[probe]`: every encoding read back by bpftrace.
+      - name: Attach bpftrace to #[probe]
+        if: matrix.crate == 'anyprobe'
+        run: bash spike/scripts/attach-linux-attr.sh ${{ matrix.profile }}
 
   # GitHub's macOS runners have SIP on, so dtrace may be refused. What must
   # hold regardless, for both architectures: ld64 built DOF with every

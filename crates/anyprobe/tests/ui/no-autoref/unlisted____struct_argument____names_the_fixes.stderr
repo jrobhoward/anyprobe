@@ -1,0 +1,7 @@
+error: argument `opts` has no native probe encoding; add `serde(opts)`, `debug(opts)` or `skip(opts)` to `#[probe]`, or enable the "autoref" feature of anyprobe
+ --> tests/ui/no-autoref/unlisted____struct_argument____names_the_fixes.rs:5:23
+  |
+5 | fn hit(id: u64, opts: Opts) {}
+  |                       ^^^^
+  |
+  = note: this error originates in the macro `::anyprobe::__private::unlisted` (in Nightly builds, run with -Z macro-backtrace for more info)

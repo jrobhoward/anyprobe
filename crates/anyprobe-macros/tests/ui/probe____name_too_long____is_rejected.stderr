@@ -1,0 +1,5 @@
+error: probe name `a_name_that_is_long_enough_to_push_the_return_probe_past_63__entry` is 66 bytes; the limit is 63
+ --> tests/ui/probe____name_too_long____is_rejected.rs:1:42
+  |
+1 | #[anyprobe::probe(provider = "t", name = "a_name_that_is_long_enough_to_push_the_return_probe_past_63")]
+  |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -10,7 +10,6 @@ macro_rules! __anyprobe_define_probe {
     (
         provider: $provider:literal,
         name: $name:literal,
-        etw_provider: $etw:path,
         params: [$($param:ident: $ty:ty),*],
         sdt: $sdt:literal, [$($sdt_op:tt)*],
         dtrace: { $($dtrace:tt)* },
@@ -33,11 +32,4 @@ macro_rules! __anyprobe_define_probe {
         #[allow(unused_variables)]
         pub fn fire($($param: $ty),*) {}
     };
-}
-
-/// Nothing to register on this target.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __anyprobe_define_provider {
-    ($ident:ident, $name:literal) => {};
 }

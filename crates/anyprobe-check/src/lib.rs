@@ -51,3 +51,34 @@ pub fn any_enabled() -> bool {
         || flags::enabled()
         || slices::enabled()
 }
+
+/// `#[probe]` with native arguments and a native return value.
+#[anyprobe::probe(ret = native)]
+#[must_use]
+pub fn attr_native(id: u64, delta: i32, ok: bool, c: char, text: &str, at: *const u8) -> u64 {
+    let _ = (ok, c, at);
+    id.wrapping_add(delta as u64) ^ text.len() as u64
+}
+
+/// `#[probe]` with `debug` arguments and return value.
+#[anyprobe::probe(debug(values), ret = debug)]
+#[must_use]
+pub fn attr_debug(id: u64, values: &[u16]) -> Vec<u16> {
+    let _ = id;
+    values.iter().rev().copied().collect()
+}
+
+/// `#[probe]` with a `serde` argument.
+#[cfg(feature = "serde")]
+#[anyprobe::probe(serde(values))]
+#[must_use]
+pub fn attr_serde(values: &[u32]) -> usize {
+    values.len()
+}
+
+/// `#[probe]` with more arguments than fit, collapsed into one object.
+#[anyprobe::probe(debug(d))]
+#[must_use]
+pub fn attr_collapsed(a: &str, b: &str, c: &str, d: Option<u8>) -> usize {
+    a.len() + b.len() + c.len() + usize::from(d.unwrap_or(0))
+}

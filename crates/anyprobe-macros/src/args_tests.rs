@@ -20,8 +20,9 @@ fn classify____integers____keep_their_rust_name() {
 }
 
 #[test]
-fn classify____bool_and_pointers____are_accepted() {
+fn classify____bool_char_and_pointers____are_accepted() {
     assert_eq!(kind(parse_quote!(bool)), Some(Kind::Bool));
+    assert_eq!(kind(parse_quote!(char)), Some(Kind::Char));
     assert_eq!(kind(parse_quote!(*const Foo)), Some(Kind::Pointer));
     assert_eq!(kind(parse_quote!(*mut u8)), Some(Kind::Pointer));
 }
@@ -41,7 +42,6 @@ fn classify____byte_slice____is_bytes() {
 #[test]
 fn classify____unsupported_types____are_rejected() {
     assert_eq!(kind(parse_quote!(u128)), None);
-    assert_eq!(kind(parse_quote!(char)), None);
     assert_eq!(kind(parse_quote!(f64)), None);
     assert_eq!(kind(parse_quote!(String)), None);
     assert_eq!(kind(parse_quote!(&mut str)), None);

@@ -11,5 +11,12 @@ authors.workspace = true
 [lints]
 workspace = true
 
+# Mirrors anyprobe's features, so `--no-default-features` and `--features
+# autoref` on the workspace reach anyprobe rather than being undone here.
+[features]
+default = ["serde"]
+serde = ["anyprobe/serde"]
+autoref = ["anyprobe/autoref"]
+
 [dependencies]
-anyprobe = { path = "../anyprobe" }
+anyprobe = { path = "../anyprobe", default-features = false }

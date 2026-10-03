@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
+use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{Attribute, FnArg, ForeignItemFn, Ident, LitStr, Pat, ReturnType, Token};
@@ -27,9 +28,6 @@ const X86_64_REGS: [&str; MAX_OPERANDS] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9
 /// DTrace's default stability attributes, as `dtrace -h` writes them for a
 /// provider with no `#pragma D attributes`.
 const STABILITY: &str = "1_1_0_1_1_0_1_1_0_1_1_0_1_1_0";
-
-/// Identifier of the per-block provider static the probe modules share.
-const PROVIDER_STATIC: &str = "__ANYPROBE_PROVIDER";
 
 struct Input {
     provider: Option<LitStr>,
@@ -56,18 +54,22 @@ impl Parse for Input {
 }
 
 /// One validated argument.
-struct Arg {
-    name: Ident,
-    ty: TokenStream,
-    kind: Kind,
+pub(crate) struct Arg {
+    /// The parameter name `fire` declares.
+    pub(crate) name: Ident,
+    /// The ETW field name.
+    pub(crate) field: String,
+    /// The parameter type `fire` declares.
+    pub(crate) ty: TokenStream,
+    pub(crate) kind: Kind,
 }
 
 /// One validated probe.
 pub(crate) struct Probe {
-    attrs: Vec<Attribute>,
-    vis: syn::Visibility,
-    name: Ident,
-    args: Vec<Arg>,
+    pub(crate) attrs: Vec<Attribute>,
+    pub(crate) vis: syn::Visibility,
+    pub(crate) name: Ident,
+    pub(crate) args: Vec<Arg>,
 }
 
 /// Expands a `probes!` invocation.
@@ -100,36 +102,8 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         return Ok(TokenStream::new());
     }
 
-    // The provider and the probe modules live in one wrapper module, so the
-    // probes reach the provider with `super::` wherever the block is: in a
-    // module, or in a function body, where `super::` from a nested module
-    // skips the function's scope. The probes are re-exported with their
-    // declared visibility. The first probe's name keeps the wrapper unique: a
-    // second block reusing it would already clash on the re-export.
-    let provider_static = format_ident!("{PROVIDER_STATIC}");
-    let wrapper = format_ident!("__anyprobe_{}", probes[0].name);
-    let definitions = probes
-        .iter()
-        .map(|p| define_probe(&provider, &provider_static, p));
-    let reexports = probes.iter().map(|p| {
-        let (vis, name) = (&p.vis, &p.name);
-        quote! {
-            #[allow(unused_imports)]
-            #vis use #wrapper::#name;
-        }
-    });
-    Ok(quote! {
-        #[doc(hidden)]
-        #[allow(non_snake_case)]
-        mod #wrapper {
-            #[allow(unused_imports)]
-            use super::*;
-
-            ::anyprobe::__private::define_provider!(#provider_static, #provider);
-            #(#definitions)*
-        }
-        #(#reexports)*
-    })
+    let definitions = probes.iter().map(|p| define_probe(&provider, p));
+    Ok(quote!(#(#definitions)*))
 }
 
 fn combine(errors: &mut Option<syn::Error>, e: syn::Error) {
@@ -243,6 +217,7 @@ fn validate(item: ForeignItemFn) -> syn::Result<Probe> {
         })?;
         args.push(Arg {
             ty: kind.param_type(&typed.ty),
+            field: arg_name.unraw().to_string(),
             name: arg_name,
             kind,
         });
@@ -296,11 +271,20 @@ pub(crate) fn sdt_format(sizes: &[&str]) -> String {
         .join(" ")
 }
 
-fn define_probe(provider: &str, provider_static: &Ident, probe: &Probe) -> TokenStream {
+/// One probe's module, named after the probe.
+fn define_probe(provider: &str, probe: &Probe) -> TokenStream {
+    define_named_probe(provider, &probe.name.to_string(), probe)
+}
+
+/// One probe's module, `probe.name`, for the probe `name_str`:
+/// `define_probe!` with every string each backend needs.
+pub(crate) fn define_named_probe(provider: &str, name_str: &str, probe: &Probe) -> TokenStream {
     let Probe {
-        attrs, name, args, ..
+        attrs,
+        vis,
+        name,
+        args,
     } = probe;
-    let name_str = name.to_string();
 
     let params = args.iter().map(|a| {
         let (n, t) = (&a.name, &a.ty);
@@ -324,7 +308,7 @@ fn define_probe(provider: &str, provider_static: &Ident, probe: &Probe) -> Token
     });
 
     let [probe_sym, enabled_sym, stability_sym, typedefs_sym] =
-        dtrace_symbols(provider, &name_str, &c_types);
+        dtrace_symbols(provider, name_str, &c_types);
     let aarch64 = operands
         .iter()
         .zip(AARCH64_REGS)
@@ -338,21 +322,20 @@ fn define_probe(provider: &str, provider_static: &Ident, probe: &Probe) -> Token
         let (method, value, out) = a.kind.etw_field(&a.name);
         let method = format_ident!("{method}");
         let out = format_ident!("{out}");
-        let field = a.name.to_string();
+        let field = &a.field;
         quote!(#method(#field, (#value), #out))
     });
 
     quote! {
         #(#attrs)*
         #[allow(non_snake_case)]
-        pub mod #name {
+        #vis mod #name {
             #[allow(unused_imports)]
             use super::*;
 
             ::anyprobe::__private::define_probe! {
                 provider: #provider,
                 name: #name_str,
-                etw_provider: super::#provider_static,
                 params: [#(#params),*],
                 sdt: #sdt, [#(#sdt_ops),*],
                 dtrace: {

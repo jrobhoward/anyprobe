@@ -29,7 +29,10 @@ version = "0.1.0"
 dependencies = [
  "anyprobe-macros",
  "criterion",
+ "serde",
+ "serde_json",
  "tracelogging_dynamic",
+ "trybuild",
 ]
 
 [[package]]

@@ -18,6 +18,7 @@ pub(crate) enum Kind {
     /// `i8`..`i64`, `isize`; the name is the Rust type.
     Signed(&'static str),
     Bool,
+    Char,
     /// `*const T` or `*mut T`.
     Pointer,
     /// `&str`.
@@ -31,7 +32,7 @@ const SIGNED: [&str; 5] = ["i8", "i16", "i32", "i64", "isize"];
 
 /// The types the macro accepts, for error messages.
 pub(crate) const ACCEPTED: &str = "u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, \
-     *const T, *mut T, &str or &[u8]";
+     char, *const T, *mut T, &str or &[u8]";
 
 fn single_ident(ty: &Type) -> Option<String> {
     match ty {
@@ -54,7 +55,11 @@ pub(crate) fn classify(ty: &Type) -> Option<Kind> {
         if let Some(n) = SIGNED.iter().find(|n| **n == name) {
             return Some(Kind::Signed(n));
         }
-        return (name == "bool").then_some(Kind::Bool);
+        return match name.as_str() {
+            "bool" => Some(Kind::Bool),
+            "char" => Some(Kind::Char),
+            _ => None,
+        };
     }
     match ty {
         Type::Ptr(_) => Some(Kind::Pointer),
@@ -87,7 +92,7 @@ impl Kind {
     /// architecture.
     pub(crate) fn operands(self, arg: &Ident) -> Vec<TokenStream> {
         match self {
-            Kind::Unsigned(_) | Kind::Bool => vec![quote!(#arg as u64)],
+            Kind::Unsigned(_) | Kind::Bool | Kind::Char => vec![quote!(#arg as u64)],
             Kind::Signed(_) => vec![quote!(#arg as i64)],
             Kind::Pointer => vec![quote!(#arg as usize as u64)],
             Kind::Str | Kind::Bytes => vec![quote!(#arg.as_ptr()), quote!(#arg.len() as u64)],
@@ -106,7 +111,7 @@ impl Kind {
     /// The C type DTrace records for each operand.
     pub(crate) fn c_types(self) -> &'static [&'static str] {
         match self {
-            Kind::Unsigned(_) | Kind::Bool => &["uint64_t"],
+            Kind::Unsigned(_) | Kind::Bool | Kind::Char => &["uint64_t"],
             Kind::Signed(_) => &["int64_t"],
             Kind::Pointer => &["uintptr_t"],
             Kind::Str => &["char *", "uint64_t"],
@@ -123,6 +128,7 @@ impl Kind {
             Kind::Signed("isize") => ("add_i64", quote!(#arg as i64), "Default"),
             Kind::Signed(n) => (etw_method(n), quote!(#arg), "Default"),
             Kind::Bool => ("add_bool32", quote!(#arg as i32), "Default"),
+            Kind::Char => ("add_u32", quote!(#arg as u32), "Default"),
             Kind::Pointer => ("add_u64", quote!(#arg as usize as u64), "Hex"),
             Kind::Str => ("add_str8", quote!(#arg), "Utf8"),
             Kind::Bytes => ("add_binary", quote!(#arg), "Default"),

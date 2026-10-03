@@ -361,9 +361,147 @@ it.
 
 Needs the other machines (`ATTACH_CRATE=anyprobe`):
 
-- Linux: bpftrace and perf attach (`attach-linux.sh`,
-  `attach-linux-perf.sh`), x86_64 and aarch64.
+- Linux x86_64: done, see the Linux table below.
+- Linux aarch64: bpftrace and perf attach (`attach-linux.sh`,
+  `attach-linux-perf.sh`).
 - Windows: done, see the table below.
+
+## Phase 2: `#[probe]` for sync fns
+
+### Expansion
+
+```rust
+#[anyprobe::probe(serde(q), ret = debug)]
+fn query(id: u64, q: &Query) -> Result<Rows, E> { body }
+// becomes
+fn query(id: u64, q: &Query) -> Result<Rows, E> {
+    mod __anyprobe {                     // inside the body: no outside names needed
+        /* define_probe! modules __anyprobe_entry (query__entry) and
+           __anyprobe_return (query__return) */
+        #[cold] #[inline(never)] pub fn fire_entry(id: u64, q: Value<'_>) { /* encode, fire */ }
+        #[cold] #[inline(never)] pub fn fire_return(ret: Value<'_>) { /* encode, fire */ }
+    }
+    if __anyprobe::__anyprobe_entry::enabled() {
+        __anyprobe::fire_entry(id, ::anyprobe::__private::serde_value!("q", &q));
+    }
+    let __anyprobe_ret = ::anyprobe::__private::call_once(move || -> Result<Rows, E> { body });
+    if __anyprobe::__anyprobe_return::enabled() {
+        __anyprobe::fire_return(Value::debug(&__anyprobe_ret));
+    }
+    __anyprobe_ret
+}
+```
+
+- The body runs through `call_once(impl FnOnce() -> R)`, not `(move || ..)()`:
+  a closure called directly is inferred `FnMut`, and then a `&mut self`
+  method cannot return a borrow of `self`. With `FnOnce` every tested shape
+  compiles: early `return`, `?` into `Box<dyn Error>`, elided lifetimes,
+  `impl Trait` returns (annotation omitted, inferred), generics, `self` by
+  value / `&` / `&mut`, `mut` arguments, trait default methods, `unsafe fn`
+  (body wrapped in `unsafe {}` with `unused_unsafe` allowed, since pre-2024
+  editions allow unsafe calls directly in an `unsafe fn`).
+- The helpers are not generic. Encoded arguments cross into them as
+  `Value<'_>`: an enum of the native kinds plus `&dyn Debug` and
+  `&dyn SerializeJson` (object-safe `Serialize`). Generic fns therefore get
+  one helper and one probe site, not one per instantiation, and the probe
+  module never names the user's types (pointers are passed as `*const ()`).
+- Rejected: `async fn` (phase 3), `const fn`, `-> !`, `#[track_caller]` (the
+  closure would report its own location), pattern arguments other than `_`.
+  `unwind` / `symbol` say "not implemented yet".
+
+### Decisions
+
+- Provider: `provider = "..."` per attribute, default `CARGO_CRATE_NAME`. The
+  crate-root `anyprobe::provider!()` from the original sketch is dropped: a
+  proc macro cannot read it, and a `macro_rules!` callback through `crate::`
+  is rejected for macro-expanded `macro_export` macros. See open questions.
+- Windows: one ETW registration per provider *name* per process, interned at
+  runtime (`etw::Probe` per probe, leaked `Provider` per name). Each probe
+  keeps its own `AtomicU8`, which the provider's callback updates, so the
+  check stays one load. `probes!` uses the same path; its per-block wrapper
+  module and provider static are gone.
+- Native types: the phase 1 list plus `char`, references to scalars (passed
+  by value), `&mut str`, `&mut [u8]`. `u128`/`i128` are not native (would
+  need two operands and a format no tracer reads as one value); use `debug`.
+- `native(x)` on an unrecognized type: one unsigned 64-bit operand through the
+  public `anyprobe::Native` trait (`to_u64`). Signedness cannot be chosen per
+  type: the SDT format is a literal in the `asm!` template.
+- `self` is skipped unless listed; `_` arguments are skipped.
+- Encoded payloads: thread-local reused `Vec<u8>`; a NUL after each payload
+  (the "proposal" above, adopted: perf and gdb read them); cut at 4096 bytes
+  at a UTF-8 boundary, no truncation flag (see open questions). A probe fired
+  while another is encoding on the same thread gets a fresh buffer.
+- Collapse: if the entry probe's operands exceed 6, all non-skipped args go
+  into one JSON object passed as `args`: natives as JSON values, `serde` raw,
+  `debug` as JSON strings. Works without the `serde` feature.
+- `autoref` order is `Serialize` > `Debug` > error. `Native` is not in the
+  chain: the operand count must be known to the proc macro, and a
+  trait-selected native would change it. `autoref` implies `serde`, so a
+  second crate enabling `serde` cannot flip an argument from `Debug` to JSON.
+  An omitted `ret` is no payload with or without `autoref` (otherwise turning
+  `autoref` on would change a probe that compiled without it).
+- The `serde`-off and no-`autoref` errors are `macro_rules!` in
+  `anyprobe::__private` (compiled on every target), not decisions in the proc
+  macro, so `anyprobe-macros` has no features. The `autoref` fallback carries
+  `#[diagnostic::on_unimplemented]` on a method bound, so the error is
+  "`Opts` has no probe encoding", not a list of autoref traits.
+- Probe names: `{name}__entry` / `{name}__return`; `name` defaults to the fn
+  name, so the base can be at most 55 bytes.
+
+### Status (2026-10-02)
+
+Implemented. Checked on the Linux x86_64 host:
+
+- Integration tests (`tests/probe_attr.rs`, `tests/probe_autoref.rs`) cover
+  every signature shape above; encoder unit tests cover JSON escaping,
+  truncation at a character boundary, NUL termination, buffer reuse and
+  reentrancy. 21 new compile-fail cases (`anyprobe-macros/tests/ui`, and
+  `anyprobe/tests/ui/<feature-set>` for the four that depend on features).
+- Generated code is clean under `clippy::pedantic` and `nursery` in the
+  caller's crate.
+- Feature sets: default, `--no-default-features`, `autoref`, both, all.
+  Found while doing it: the workspace `--no-default-features` command never
+  built anyprobe without `serde`, because `anyprobe-macros`'s dev-dependency
+  and `anyprobe-check` took the defaults. Both now use
+  `default-features = false` (check mirrors the features).
+- Clippy and `build --lib` codegen for every target, including Windows with
+  the new provider runtime, and `--cfg anyprobe_dylib`; MSRV 1.88; doc;
+  `cargo deny` (adds `serde`, `serde_json`; permissive).
+- `attr` example SDT notes: one note per probe site, argument formats as
+  expected (`8@` pairs for encoded args). Helpers that encode have two sites
+  per probe (the fire closure is called from the thread-local path and the
+  reentrancy fallback); both are real sites under the same name.
+
+Needs verification:
+
+- bpftrace reading every encoding: `spike/scripts/attach-linux-attr.sh`
+  (needs sudo; also in CI on x86_64 and aarch64).
+- Windows: the provider runtime changed (interning, per-probe flags). It
+  compiles and lints for `x86_64-pc-windows-msvc`; nothing has run it.
+  `ATTACH_CRATE=anyprobe attach-windows.ps1` re-checks the `work` example.
+- macOS: `#[probe]` sites through `inspect_dof` and `sudo dtrace`, including
+  two probes with one name and different argument types (likely a conflict
+  in ld64; see open questions).
+- Disabled cost of a `#[probe]` fn against the `work_outlined` baseline.
+
+### Open questions
+
+- Crate-wide provider. A crate whose name ends in a digit (`http2`, `sha2`,
+  and every trybuild test crate) cannot use the default and must repeat
+  `provider = "..."` on every attribute. Options: append `_` to such names
+  by default (silent, but `probes!` would need the same rule); read
+  `[package.metadata.anyprobe] provider` from the manifest via
+  `CARGO_MANIFEST_DIR` (rebuild tracking unclear); a textually scoped
+  `macro_rules!` defined by `anyprobe::provider!` at the crate root (works
+  only for modules declared after it, and makes it mandatory).
+- Same probe name, different signatures: `Foo::new(x: u32)` and
+  `Bar::new()` both default to `new__entry`. SDT and ETW tolerate it; DTrace
+  probably does not. Detecting it needs crate-wide knowledge the macro does
+  not have (phase 4's registry could check at link time or at startup).
+- Truncation is silent. A flags operand would cost one of the six, and
+  bpftrace's own 64-byte default cuts long before 4096.
+- Payload cap is a constant. Configurable at runtime costs a load in the cold
+  path only; not done until someone needs it.
 
 ## FreeBSD (deferred)
 
@@ -420,6 +558,7 @@ them generic. `spike/scripts/attach-{linux,macos,freebsd}.sh` and
 | bpftrace `-p` attach on x86_64 | Yes, release and release-lto (bpftrace 0.20.2, kernel 6.8): attaching raised the semaphore inside the process and detaching cleared it; `str(arg1, arg2)` read every label; across about 150 consecutive iterations each label fired exactly once per iteration and `work__return` four times, with partial iterations only at the edges of the window | `spike/scripts/attach-linux.sh` under sudo |
 | perf attach on x86_64 | Yes, release and release-lto (perf 6.8.12), after moving `.stapsdt.base` into the text segment (see below): `perf probe` added all four sites, `perf record -p` raised the semaphore and cleared it on exit, and across 150 consecutive iterations each fired `work__entry` and `work__return` 4 times. bpftrace re-checked after the move, same result as above | `spike/scripts/attach-linux-perf.sh` and `attach-linux.sh` under sudo |
 | SystemTap attach on x86_64 | Only with the binary linked so file offsets equal virtual addresses (`-C link-arg=-Wl,-z,separate-loadable-segments`, about 1-2% larger). Then, release and release-lto: semaphore raised and cleared, `user_string_n($arg2, $arg3)` read every label, 150 consecutive complete iterations. With rust-lld's default layout it fails (below) | `spike/scripts/attach-linux-stap.sh` with SystemTap 5.6 built from source (Ubuntu 24.04's 5.0 cannot build modules for kernel 6.8) |
+| anyprobe's Linux backend (`probes!`) behaves like the spike | Yes, release and release-lto. The native glibc build of the `work` example has the spike's four SDT notes (3 `work__entry`, 1 `work__return`), each on a `nop`, with shared semaphores in `.probes` and an executable `.stapsdt.base`. bpftrace 0.20.2: attaching raised the semaphore and detaching cleared it, every label read, 149 consecutive complete iterations. perf 6.8.12: `perf probe` added the events, recording raised and cleared the semaphore, 149-150 consecutive iterations with 4 `work__entry` and 4 `work__return` each. Kernel 6.8 | `ATTACH_CRATE=anyprobe`, `attach-linux.sh` and `attach-linux-perf.sh`; `readelf -n` and `objdump` for the notes, 2026-10-02 |
 
 ### Settled locally (Windows x86_64 host, 2026-10-02)
 
