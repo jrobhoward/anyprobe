@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["spike"]
+members = [
+    "crates/anyprobe",
+    "crates/anyprobe-macros",
+    "crates/anyprobe-check",
+    "spike",
+]
 
 [workspace.package]
 edition = "2024"

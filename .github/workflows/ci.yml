@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
                    x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
-            cargo build -p anyprobe-spike --lib --release --target $t
+            cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t
           done
       # `--cfg anyprobe_dylib` swaps the Linux semaphore load for a plain Rust
       # load. Step-scoped: it holds a cfg only, never `-Dwarnings`.
@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             cargo clippy --workspace --target $t --all-targets -- -Dwarnings
-            cargo build -p anyprobe-spike --lib --release --target $t
+            cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t
           done
 
   msrv:
@@ -113,6 +113,43 @@ jobs:
           cargo update
           cargo check --workspace --all-targets
 
+  # Catches a packaging problem (a missing file, an unpublishable path
+  # dependency) before a release rather than after one.
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe
+
+  # Compares the public API against the newest release on crates.io. Nothing
+  # is published yet, so it reports that and passes until the first release.
+  semver:
+    name: semver compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - id: baseline
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H 'User-Agent: anyprobe-ci' https://crates.io/api/v1/crates/anyprobe)
+          if [ "$code" = "404" ]; then
+            echo "::notice::anyprobe is not published yet, so there is no baseline to compare against."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          elif [ "$code" = "200" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::crates.io returned HTTP $code; cannot tell whether a baseline exists"
+            exit 1
+          fi
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        if: steps.baseline.outputs.exists == 'true'
+        with:
+          package: anyprobe
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -123,15 +160,17 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Attach bpftrace to the running spike. Passing means: the semaphore flipped
-  # inside the process when bpftrace attached and back when it detached, and
-  # bpftrace read the arguments from every site.
+  # Attach bpftrace to the running program. Passing means: the semaphore
+  # flipped inside the process when bpftrace attached and back when it
+  # detached, and bpftrace read the arguments from every site. `crate` picks
+  # the spike or the anyprobe crate's `work` example (same probes).
   spike-linux:
-    name: spike attach / ${{ matrix.os }} / ${{ matrix.profile }}
+    name: attach / ${{ matrix.crate }} / ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        crate: [spike, anyprobe]
         os: [ubuntu-latest, ubuntu-24.04-arm]
         profile: [release, release-lto]
     steps:
@@ -140,6 +179,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y bpftrace
       - name: Attach bpftrace
         run: bash spike/scripts/attach-linux.sh ${{ matrix.profile }}
+        env:
+          ATTACH_CRATE: ${{ matrix.crate }}
 
   # GitHub's macOS runners have SIP on, so dtrace may be refused. What must
   # hold regardless, for both architectures: ld64 built DOF with every
@@ -147,11 +188,12 @@ jobs:
   # call there would fall through into the next function once rewritten).
   # `inspect_dof` checks all of it and fails on any bad site.
   spike-macos:
-    name: spike / macos / ${{ matrix.target }} / ${{ matrix.profile }}
+    name: attach / ${{ matrix.crate }} / macos / ${{ matrix.target }} / ${{ matrix.profile }}
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
+        crate: [spike, anyprobe]
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
         profile: [release, release-lto]
     steps:
@@ -162,6 +204,7 @@ jobs:
       - name: Check the DOF ld64 built
         run: spike/scripts/attach-macos.sh ${{ matrix.profile }}
         env:
+          ATTACH_CRATE: ${{ matrix.crate }}
           SPIKE_TARGET: ${{ matrix.target }}
           SPIKE_ATTACH: "0"
       # Works with SIP on for this binary on a local Apple Silicon Mac;
@@ -170,16 +213,19 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin'
         continue-on-error: true
         run: spike/scripts/attach-macos.sh ${{ matrix.profile }}
+        env:
+          ATTACH_CRATE: ${{ matrix.crate }}
 
   # Start an ETW session against the provider GUID the spike prints. Passing
   # means the provider saw the session (the process logged
   # entry-enabled=true) and the session captured events.
   spike-windows:
-    name: spike attach / windows / ${{ matrix.profile }}
+    name: attach / ${{ matrix.crate }} / windows / ${{ matrix.profile }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
+        crate: [spike, anyprobe]
         profile: [release, release-lto]
     defaults:
       run:
@@ -189,11 +235,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Attach an ETW session
         run: ./spike/scripts/attach-windows.ps1 -Profiles ${{ matrix.profile }}
+        env:
+          ATTACH_CRATE: ${{ matrix.crate }}
 
-  # Root in the VM, so dtrace runs for real. Passing means registration
-  # succeeded and dtrace read the arguments from every site.
+  # FreeBSD is deferred (docs/PLAN.md), so this runs only when started by
+  # hand, and never fails the workflow. Root in the VM, so dtrace runs for
+  # real: it reports whether the spike's runtime DOF registration works.
   spike-freebsd:
-    name: spike attach / freebsd
+    name: spike attach / freebsd (deferred, manual)
+    if: github.event_name == 'workflow_dispatch'
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -224,3 +275,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo bench -p anyprobe-spike --bench disabled_cost -- --warm-up-time 2 --measurement-time 5
+      - run: cargo bench -p anyprobe --bench disabled_cost -- --warm-up-time 2 --measurement-time 5

@@ -11,7 +11,9 @@ enabled-check per probe; inlining is unaffected.
 
 ## Goals
 
-- One attribute, four OSes: Linux, macOS, FreeBSD, Windows (no-op elsewhere).
+- One attribute, three OSes: Linux, macOS, Windows (no-op elsewhere).
+- FreeBSD is deferred indefinitely (see [FreeBSD](#freebsd-deferred)): it
+  compiles to the no-op backend until someone needs it.
 - Stable probe names, independent of Rust paths and symbol mangling.
 - Near-zero disabled cost: argument encoding only runs when a tracer is attached.
 - Explicit, predictable argument encoding; optional automatic selection behind a
@@ -142,8 +144,8 @@ LLVM duplication each produce another site under the same probe name.
 |---|---|---|---|---|
 | Linux | SystemTap SDT v3 notes (`.note.stapsdt`) via `asm!` | SDT semaphore (`.probes`, kernel ≥4.20 ref_ctr) | none | bpftrace, perf (SystemTap: link flag needed, see Phase 0 results) |
 | macOS | DTrace USDT via linker relocations (`__dtrace_probe$…`, `__dtrace_isenabled$…`) | DTrace is-enabled | none (ld64 builds DOF) | `dtrace` (SIP: `--without dtrace`) |
-| FreeBSD | DOF built from custom sections (usdt "no-linker" approach) | DTrace is-enabled | ioctl to `/dev/dtrace/helper` at startup (ctor) | `dtrace` |
-| Windows | ETW TraceLogging via `tracelogging` crate; one event per probe | provider level/keyword check | `register()` at startup (ctor), unregister at exit | WPR/WPA, PerfView `*myapp`, `tracelog`, DTrace `etw` |
+| FreeBSD (deferred) | no-op; the spike's DOF prototype is kept in `spike/` | `false` | — | — |
+| Windows | ETW TraceLogging via `tracelogging_dynamic`; one event per probe | one atomic flag, kept in sync by the provider's enable callback | lazily, on the first enabled check of any probe in the provider; unregistered at exit (`atexit`) | WPR/WPA, PerfView `*myapp`, `tracelog`, DTrace `etw` |
 | other | nothing | `false` | — | — |
 
 Names: one canonical name, rendered per backend (DTrace `__` → `-`; ETW provider
@@ -208,16 +210,179 @@ For raw uprobes / DTrace `pid` provider / Frida use without USDT:
    - macOS relocation emission from `asm!`
    - FreeBSD helper registration from Rust
    - `tracelogging` cost and registration
-1. `anyprobe` runtime: backends, low-level `probe!` macro, no-op fallback.
+1. `anyprobe` runtime and the low-level `probes!` macro for Linux, macOS and
+   Windows, no-op elsewhere (FreeBSD included). Design below.
 2. `#[probe]` for sync fns: naming, `native`/`serde`/`debug`/`skip`, `ret`,
    compile-error diagnostics; `autoref` feature.
 3. `async fn`, `unwind`, `symbol`.
 4. Tooling.
 5. CI matrix:
    - Linux: privileged bpftrace
-   - FreeBSD: VM
    - Windows: ETW session as admin
    - macOS: metadata presence only, since SIP is on in CI
+
+## Phase 1: runtime and `probes!`
+
+### Scope
+
+- `crates/anyprobe-macros`: the function-like `probes!` proc macro.
+- `crates/anyprobe`: re-exports `probes!`; `#[doc(hidden)] pub mod __private`
+  holds the per-backend `macro_rules!` that generated code calls, and the
+  Windows provider runtime.
+- `crates/anyprobe-check` (unpublished): a library that defines one probe per
+  argument kind, so `cargo build --lib --target ...` reaches codegen for every
+  backend's `asm!` without a linker.
+- An example (`crates/anyprobe/examples/work.rs`) with the spike's probes,
+  labels and command line, so the spike's attach scripts and benchmark check
+  the real crate (`ATTACH_CRATE=anyprobe`).
+- Not in phase 1: `#[probe]`, `serde`/`debug` encoding, `autoref`, async.
+
+### API
+
+```rust
+anyprobe::probes! {
+    provider = "myapp";   // optional; default CARGO_CRATE_NAME
+
+    /// Docs land on the generated module.
+    pub fn request__start(id: u64, path: &str);
+    fn request__done(id: u64, status: u16, ok: bool);
+}
+
+if request__start::enabled() {
+    request__start::fire(id, path);
+}
+```
+
+Each declaration becomes a module with the declaration's visibility,
+holding `enabled() -> bool`, `fire(...)` with the declared parameters, and
+`PROVIDER` / `NAME` string constants. Both functions are `#[inline(always)]`:
+every inlined copy of `fire` is another probe site, and every copy of
+`enabled` another check. Callers keep encoding behind `enabled()`; phase 2's
+`#[probe]` generates exactly this shape with cold helpers.
+
+Each block expands to one hidden wrapper module holding the block's provider
+and its probe modules, and re-exports each probe module with its declared
+visibility. The probes reach the provider with `super::`, which only works
+because both are inside the wrapper: a module nested in a function body
+resolves `super::` past the function's scope, so a provider defined next to
+the block would be unreachable there (found when the first doctest, which
+runs inside `fn main`, was checked for Windows). Phase 2 needs one provider
+per crate rather than per block (ETW limits registrations per process), so it
+adds a crate-root `anyprobe::provider!()` that `#[probe]` refers to by
+absolute path.
+
+### Argument types
+
+Recognized syntactically, since the macro must know each argument's shape to
+build the probe metadata. Type aliases are rejected; phase 2's `native(x)`
+covers them.
+
+| Rust type | Linux / macOS operands | DTrace C type | ETW field |
+|---|---|---|---|
+| `u8`, `u16`, `u32`, `u64`, `usize` | 1, widened to `u64` (`8@`) | `uint64_t` | `u8`..`u64` (`usize` as `u64`) |
+| `i8`, `i16`, `i32`, `i64`, `isize` | 1, widened to `i64` (`-8@`) | `int64_t` | `i8`..`i64` (`isize` as `i64`) |
+| `bool` | 1, as `u64` | `uint64_t` | `bool32` |
+| `*const T`, `*mut T` | 1, address as `u64` | `uintptr_t` | `u64`, hex |
+| `&str` | 2: pointer, length | `char *`, `uint64_t` | `str8`, UTF-8 |
+| `&[u8]` | 2: pointer, length | `uint8_t *`, `uint64_t` | `binary` |
+
+At most 6 operands per probe: macOS x86-64 passes probe arguments in the six
+System V argument registers. (SDT allows 12.) Phase 2 collapses larger argument
+lists into one encoded object.
+
+### Names
+
+- Provider: ASCII letters, digits and `_`, not starting with a digit, at most
+  58 bytes (DTrace appends the pid), and not ending in a digit (`dtrace -h`:
+  "provider name may not end with a digit"). A crate whose name breaks this
+  needs `provider = "..."`.
+- Probe: ASCII letters, digits and `_`, not starting with a digit, at most 63
+  bytes. Used as-is in SDT notes and ETW events; DTrace shows `__` as `-`.
+
+### Code generation
+
+The proc macro is target-independent: it validates, computes every string
+each backend needs (SDT argument format, DTrace symbol names with hex-encoded
+C types, ETW field calls, register assignments for both macOS architectures),
+and emits one `::anyprobe::__private::define_probe! { ... }` per probe. The
+`macro_rules!` behind that name is defined once per backend in `anyprobe`
+under `cfg`, and uses only the parts it needs. All `asm!` and `unsafe` live in
+`anyprobe`, where they are reviewed and tested once, not in proc-macro output.
+
+### Windows registration
+
+No static constructor. Each provider is a `static` holding a lazily created
+`tracelogging_dynamic::Provider` and one `AtomicU8`: 0 off, 1 on, 2 not yet
+registered (initial). `enabled()` is one relaxed load: 0 and 1 answer
+directly; 2 takes a cold path that registers the provider once (with an
+`atexit` handler that unregisters it, which `register`'s safety contract needs
+for providers in DLLs) and stores the current state. ETW reports existing
+sessions to a provider as it registers, so a session started before the first
+check still enables it. The enable callback stores the state on every change.
+Cost: the provider is invisible to ETW until the first check runs.
+
+### Verification
+
+- Unit tests for name validation and string computation; trybuild tests for
+  every rejected input.
+- `anyprobe-check` codegen for every target; clippy on every target.
+- The example under the existing attach scripts: macOS (`inspect_dof` and
+  `sudo dtrace`), Linux (bpftrace, perf), Windows (ETW), and the disabled-cost
+  benchmark compared against the spike.
+
+### Status (2026-10-02)
+
+Implemented. Checked on the macOS host:
+
+- `work` example (spike's probes through `probes!`): `inspect_dof` passes for
+  arm64 and x86_64, release and release-lto, with the same sites as the
+  spike (3 `work__entry` probe sites, 1 `work__return`).
+- Linux: the example linked statically for x86_64 (musl, rust-lld) has the
+  same four SDT notes as the spike, each on a `nop`, with shared semaphores
+  and an executable `.stapsdt.base`. `anyprobe-check` notes on x86_64 and
+  aarch64 carry the expected formats (`-8@` for signed values, an empty
+  format for no arguments, six operands at the limit).
+- Codegen for every target; clippy on every target, including
+  `--cfg anyprobe_dylib`; MSRV 1.88; `cargo deny`; publish dry run of both
+  crates.
+- macOS attach: `ATTACH_CRATE=anyprobe spike/scripts/attach-macos.sh` with
+  `sudo dtrace -c`, SIP on, Apple Silicon: release and release-lto each gave
+  exactly 40 firings per label over 40 iterations and 160 `work-return`.
+- Disabled cost on Apple Silicon: 1.266 ns probed against 0.950 ns baseline,
+  the same as the spike's hand-written probes (1.273 ns).
+- 39 macro unit tests, 13 compile-fail cases, 7 runtime integration tests,
+  doctests including README.md.
+
+Found while implementing: a provider defined next to the probe modules is
+unreachable when `probes!` is used in a function body (above); Windows was
+the only backend that referenced it, so only a Windows build showed it. A
+test now declares probes in a function body, and clippy for Windows compiles
+it.
+
+Needs the other machines (`ATTACH_CRATE=anyprobe`):
+
+- Linux: bpftrace and perf attach (`attach-linux.sh`,
+  `attach-linux-perf.sh`), x86_64 and aarch64.
+- Windows: ETW attach (`attach-windows.ps1`). First run of the lazy
+  registration, the enable callback, and `atexit` unregistration; none of it
+  has executed yet.
+
+## FreeBSD (deferred)
+
+Deferred indefinitely on 2026-10-02: not needed for an initial release, and
+no FreeBSD machine is available. FreeBSD builds get the no-op backend, so
+crates using anyprobe still compile there. The spike keeps the prototype:
+runtime DOF registration through `/dev/dtrace/helper` (`spike/src/freebsd.rs`,
+record parsing tested on every host) and `spike/scripts/attach-freebsd.sh`.
+Its open questions, if the work resumes:
+
+- whether `DTRACEHIOC_ADDDOF` registration works from Rust;
+- whether `fasttrap` emulates the `xor eax, eax` is-enabled site;
+- whether an unprivileged process may open `/dev/dtrace/helper`;
+- whether `dtrace -Z -c` picks up probes registered after startup, which
+  decides between lazy registration and a static constructor.
+
+CI runs `spike-freebsd` only on manual dispatch, as information.
 
 ## Phase 0 results
 
@@ -397,8 +562,6 @@ so users who set it get no warning.
   script with `STAP=DIR/bin/stap`.
 - perf on aarch64, and whether `linux-tools` installs on hosted runners.
   Candidate: an informational `attach-linux-perf.sh` step in `spike-linux`.
-- FreeBSD: `DTRACEHIOC_ADDDOF` registration, `fasttrap` emulation of the
-  `xor eax, eax` is-enabled site, argument reads (`spike-freebsd`).
 - macOS: whether hosted runners allow `sudo dtrace` (`spike-macos`,
   informational). Local attach is settled.
 - Disabled cost on Linux aarch64 (`spike-bench`). Linux x86_64 and Windows
@@ -408,7 +571,6 @@ so users who set it get no warning.
 ## Risks
 
 - macOS: SIP, Apple Silicon provider gaps, hardened-runtime binaries untraceable.
-- FreeBSD registration path is the least proven.
 - aarch64 Linux / Windows ARM64 untested.
 - The `dof` crate (Apache-2.0) covers DOF serialization; macOS needs no
   `usdt` internals, since the symbol names are generated directly.

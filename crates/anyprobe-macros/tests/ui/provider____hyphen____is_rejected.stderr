@@ -1,0 +1,5 @@
+error: provider name `my-app` must be ASCII letters, digits and `_`, not starting with a digit
+ --> tests/ui/provider____hyphen____is_rejected.rs:2:16
+  |
+2 |     provider = "my-app";
+  |                ^^^^^^^^

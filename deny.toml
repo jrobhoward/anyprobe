@@ -56,6 +56,11 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path dependencies without a version are allowed only where they never reach
+# crates.io: unpublished crates (anyprobe-check, the spike) and
+# dev-dependencies, such as anyprobe-macros's dev-dependency on anyprobe for
+# its compile-fail tests, which cargo strips at publish.
+allow-wildcard-paths = true
 # Crates whose licences are incompatible with this crate's goals, listed by
 # name so an accidental `cargo add` fails loudly. Empty until one is found.
 deny = []

@@ -1,0 +1,5 @@
+error: provider name `http2` must not end with a digit: DTrace appends the pid to it
+ --> tests/ui/provider____trailing_digit____is_rejected.rs:2:16
+  |
+2 |     provider = "http2";
+  |                ^^^^^^^

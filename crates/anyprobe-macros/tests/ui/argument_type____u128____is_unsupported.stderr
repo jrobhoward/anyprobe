@@ -1,0 +1,5 @@
+error: unsupported probe argument type; expected u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, *const T, *mut T, &str or &[u8]
+ --> tests/ui/argument_type____u128____is_unsupported.rs:3:15
+  |
+3 |     fn hit(x: u128);
+  |               ^^^^

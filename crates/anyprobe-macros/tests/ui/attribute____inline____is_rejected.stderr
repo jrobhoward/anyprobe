@@ -1,0 +1,5 @@
+error: only doc, cfg and lint attributes are allowed on a probe
+ --> tests/ui/attribute____inline____is_rejected.rs:3:7
+  |
+3 |     #[inline]
+  |       ^^^^^^

@@ -21,6 +21,16 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 [ $# -gt 0 ] || set -- release release-lto
 
+# ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example, which has
+# the spike's provider, probes and command line; the default checks the spike.
+if [ "${ATTACH_CRATE:-spike}" = anyprobe ]; then
+  pkg_args=(-p anyprobe --example work)
+  bin_rel=examples/work
+else
+  pkg_args=(-p anyprobe-spike)
+  bin_rel=anyprobe-spike
+fi
+
 stap=$(command -v "${STAP:-stap}") || { echo "stap not found; install it or set STAP" >&2; exit 2; }
 if [ "$(id -u)" -eq 0 ]; then sudo=""; else sudo="sudo"; fi
 scripts="$PWD/spike/scripts"
@@ -62,12 +72,12 @@ expect() {
 for profile in "$@"; do
   echo "== $profile"
   profile_failed=0
-  if ! cargo build -q -p anyprobe-spike --profile "$profile"; then
+  if ! cargo build -q "${pkg_args[@]}" --profile "$profile"; then
     echo "  FAIL  build"
     failed=1
     continue
   fi
-  bin="${CARGO_TARGET_DIR:-$PWD/target}/$profile/anyprobe-spike"
+  bin="${CARGO_TARGET_DIR:-$PWD/target}/$profile/$bin_rel"
   log="$work/$profile.log"
   out="$work/$profile.stap"
   err="$work/$profile.stap-err"

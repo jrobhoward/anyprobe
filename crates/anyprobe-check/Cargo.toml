@@ -1,0 +1,15 @@
+[package]
+name = "anyprobe-check"
+version = "0.0.0"
+description = "One probe per argument kind, so `cargo build --lib --target ...` reaches every backend's codegen without a linker"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyprobe = { path = "../anyprobe" }

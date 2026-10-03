@@ -25,6 +25,16 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 [ $# -gt 0 ] || set -- release release-lto
 
+# ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example, which has
+# the spike's provider, probes and command line; the default checks the spike.
+if [ "${ATTACH_CRATE:-spike}" = anyprobe ]; then
+  pkg_args=(-p anyprobe --example work)
+  bin_rel=examples/work
+else
+  pkg_args=(-p anyprobe-spike)
+  bin_rel=anyprobe-spike
+fi
+
 target=${SPIKE_TARGET:-}
 attach=${SPIKE_ATTACH:-1}
 host="$(uname -m | sed 's/arm64/aarch64/')-apple-darwin"
@@ -60,11 +70,11 @@ for profile in "$@"; do
   echo "== ${target:-$host} $profile"
   profile_failed=0
   if [ -n "$target" ]; then
-    build=(cargo build -q -p anyprobe-spike --profile "$profile" --target "$target")
-    bin="target/$target/$profile/anyprobe-spike"
+    build=(cargo build -q "${pkg_args[@]}" --profile "$profile" --target "$target")
+    bin="target/$target/$profile/$bin_rel"
   else
-    build=(cargo build -q -p anyprobe-spike --profile "$profile")
-    bin="target/$profile/anyprobe-spike"
+    build=(cargo build -q "${pkg_args[@]}" --profile "$profile")
+    bin="target/$profile/$bin_rel"
   fi
   if ! "${build[@]}"; then
     echo "  FAIL  build"

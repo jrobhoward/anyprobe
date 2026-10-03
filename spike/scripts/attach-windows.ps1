@@ -16,6 +16,9 @@ Run from an elevated (administrator) prompt: logman needs it.
 .PARAMETER Profiles
 Cargo profiles to test. Defaults to release and release-lto.
 
+Set ATTACH_CRATE=anyprobe to check the anyprobe crate's `work` example, which
+has the spike's provider, probes and command line, instead of the spike.
+
 .EXAMPLE
 pwsh spike\scripts\attach-windows.ps1
 #>
@@ -30,6 +33,14 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] $identity).IsInRole(
 if (-not $isAdmin) {
     Write-Host 'Run from an elevated prompt: logman needs administrator rights.'
     exit 2
+}
+
+if ($env:ATTACH_CRATE -eq 'anyprobe') {
+    $packageArgs = @('-p', 'anyprobe', '--example', 'work')
+    $binRel = 'examples\work.exe'
+} else {
+    $packageArgs = @('-p', 'anyprobe-spike')
+    $binRel = 'anyprobe-spike.exe'
 }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) "anyprobe-spike-$PID"
@@ -49,13 +60,13 @@ try {
     foreach ($p in $Profiles) {
         Write-Host "== $p"
         $script:profileFailed = $false
-        cargo build -q -p anyprobe-spike --profile $p
+        cargo build -q @packageArgs --profile $p
         if ($LASTEXITCODE -ne 0) {
             Write-Host '  FAIL  build'
             $script:failed = $true
             continue
         }
-        $bin = "target\$p\anyprobe-spike.exe"
+        $bin = "target\$p\$binRel"
         $log = Join-Path $work "$p.log"
         $etl = Join-Path $work "$p.etl"
         $xml = Join-Path $work "$p.xml"

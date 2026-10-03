@@ -1,0 +1,5 @@
+error: probes return nothing; remove the return type
+ --> tests/ui/signature____return_type____is_rejected.rs:3:17
+  |
+3 |     fn hit() -> u8;
+  |                 ^^

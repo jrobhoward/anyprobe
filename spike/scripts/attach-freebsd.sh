@@ -24,6 +24,17 @@ set -u
 cd "$(dirname "$0")/../.." || exit 2
 [ $# -gt 0 ] || set -- release release-lto
 
+# ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example, which has
+# the spike's provider, probes and command line; the default checks the spike.
+# (The anyprobe crate has no FreeBSD backend yet, so expect it to fail there.)
+if [ "${ATTACH_CRATE:-spike}" = anyprobe ]; then
+  pkg_args="-p anyprobe --example work"
+  bin_rel=examples/work
+else
+  pkg_args="-p anyprobe-spike"
+  bin_rel=anyprobe-spike
+fi
+
 if [ "$(id -u)" -eq 0 ]; then
   sudo=""
 elif command -v sudo >/dev/null; then
@@ -60,12 +71,12 @@ count() { awk -v k="$1" '$1 == k { print $2 }' "$2"; }
 for profile in "$@"; do
   echo "== $profile"
   profile_failed=0
-  if ! cargo build -q -p anyprobe-spike --profile "$profile"; then
+  if ! cargo build -q $pkg_args --profile "$profile"; then
     echo "  FAIL  build"
     failed=1
     continue
   fi
-  bin="$PWD/target/$profile/anyprobe-spike"
+  bin="$PWD/target/$profile/$bin_rel"
   log="$work/$profile.log"
   out="$work/$profile.dtrace"
 

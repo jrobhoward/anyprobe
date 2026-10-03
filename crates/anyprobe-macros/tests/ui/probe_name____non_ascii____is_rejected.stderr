@@ -1,0 +1,5 @@
+error: probe name `wörk` must be ASCII letters, digits and `_`, not starting with a digit
+ --> tests/ui/probe_name____non_ascii____is_rejected.rs:3:8
+  |
+3 |     fn wörk();
+  |        ^^^^

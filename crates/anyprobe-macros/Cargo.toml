@@ -1,0 +1,25 @@
+[package]
+name = "anyprobe-macros"
+version = "0.1.0"
+description = "Procedural macros for anyprobe; use them through the anyprobe crate"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[dev-dependencies]
+# Compile-fail tests for every input the macro rejects. They expand through
+# the `anyprobe` facade, as users do.
+anyprobe = { path = "../anyprobe" }
+trybuild = "1"

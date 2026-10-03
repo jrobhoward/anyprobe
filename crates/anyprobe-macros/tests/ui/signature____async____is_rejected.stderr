@@ -1,0 +1,5 @@
+error: probes cannot be `async`
+ --> tests/ui/signature____async____is_rejected.rs:3:5
+  |
+3 |     async fn hit();
+  |     ^^^^^

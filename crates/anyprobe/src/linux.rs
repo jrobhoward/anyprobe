@@ -1,0 +1,224 @@
+//! Linux: SystemTap SDT v3 notes, gated by semaphores.
+//!
+//! A probe site is a `nop` plus a non-allocated `.note.stapsdt` ELF note
+//! recording its address, the provider and probe names, the argument
+//! locations, and the address of a 16-bit semaphore. A tracer that attaches
+//! increments the semaphore (kernel uprobes `ref_ctr_offset`, Linux 4.20+) and
+//! replaces the `nop` with a breakpoint. Until then the only cost is the
+//! semaphore load.
+//!
+//! Format reference: <https://sourceware.org/systemtap/wiki/UserSpaceProbeImplementation>.
+
+pub(crate) const NAME: &str = "linux-sdt";
+
+/// Defines one probe's semaphore, `enabled` and `fire`. Called by `probes!`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_define_probe {
+    (
+        provider: $provider:literal,
+        name: $name:literal,
+        etw_provider: $etw:path,
+        params: [$($param:ident: $ty:ty),*],
+        sdt: $sdt:literal, [$($op:ident = ($opv:expr)),*],
+        dtrace: { $($dtrace:tt)* },
+        etw: [$($etw_field:tt)*],
+    ) => {
+        /// The provider this probe belongs to.
+        pub const PROVIDER: &str = $provider;
+        /// The probe's name.
+        pub const NAME: &str = $name;
+
+        // The note stores the semaphore's link-time address and the tracer
+        // writes to it, so it lives in `.probes` like the semaphores
+        // `sys/sdt.h` produces.
+        #[unsafe(link_section = ".probes")]
+        #[used]
+        static SEMAPHORE: ::core::sync::atomic::AtomicU16 = ::core::sync::atomic::AtomicU16::new(0);
+
+        /// Whether a tracer is attached to this probe.
+        #[inline(always)]
+        #[must_use]
+        pub fn enabled() -> bool {
+            $crate::__anyprobe_sema_load!(SEMAPHORE) != 0
+        }
+
+        /// Fires the probe. Every inlined copy is a separate probe site.
+        #[inline(always)]
+        pub fn fire($($param: $ty),*) {
+            $crate::__anyprobe_sdt_site!($provider, $name, SEMAPHORE, $sdt, $($op = in(reg) $opv,)*);
+        }
+    };
+}
+
+/// Nothing to register on Linux.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_define_provider {
+    ($ident:ident, $name:literal) => {};
+}
+
+/// Emits one SDT probe site: the `nop` the tracer patches, the note that
+/// describes it, and (once per object) the `.stapsdt.base` section tools use
+/// to detect prelink adjustments.
+///
+/// Labels are numeric local labels so that every copy of the block, from
+/// inlining or monomorphization, assembles to another site rather than a
+/// duplicate symbol. `_.stapsdt.base` is the one named symbol, guarded by
+/// `.ifndef`.
+///
+/// `.stapsdt.base` is executable (`"axGR"`, where `sys/sdt.h` uses `"aG"`) so
+/// that it lands in the same segment as the probe sites. perf turns a site's
+/// address into a file offset using the base section's offset, which is only
+/// right if the two share a segment's address-to-offset delta; with rust-lld
+/// and `"aG"`, perf put every probe 0x1000 bytes from its `nop`.
+///
+/// Sites are `readonly`, not `nomem`: an attached tracer reads memory through
+/// pointer arguments at the `nop`. Under `nomem` the compiler may sink or drop
+/// a store to a buffer whose only reader is the probe.
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_sdt_site {
+    ($provider:literal, $name:literal, $sema:path, $args:literal, $($operands:tt)*) => {
+        // SAFETY: the block executes a single `nop` and otherwise only emits
+        // data into non-executed sections. The operands are read-only register
+        // inputs that the `nop` leaves untouched.
+        #[allow(named_asm_labels)]
+        unsafe {
+            ::core::arch::asm!(
+                "990: nop",
+                ".pushsection .note.stapsdt, \"\", \"note\"",
+                ".balign 4",
+                ".4byte 992f-991f, 994f-993f, 3",
+                "991: .asciz \"stapsdt\"",
+                "992: .balign 4",
+                "993: .8byte 990b",
+                ".8byte _.stapsdt.base",
+                ".8byte {sema}",
+                concat!(".asciz \"", $provider, "\""),
+                concat!(".asciz \"", $name, "\""),
+                concat!(".asciz \"", $args, "\""),
+                "994: .balign 4",
+                ".popsection",
+                ".ifndef _.stapsdt.base",
+                ".pushsection .stapsdt.base, \"axGR\", \"progbits\", .stapsdt.base, comdat",
+                ".weak _.stapsdt.base",
+                ".hidden _.stapsdt.base",
+                "_.stapsdt.base: .space 1",
+                ".size _.stapsdt.base, 1",
+                ".popsection",
+                ".endif",
+                sema = sym $sema,
+                $($operands)*
+                // AT&T operand syntax: SDT argument strings name registers
+                // as `%rdi`, which is how `{aN}` renders under `att_syntax`.
+                options(att_syntax, readonly, nostack, preserves_flags),
+            )
+        }
+    };
+}
+
+/// AArch64 variant of the x86-64 definition above.
+#[cfg(target_arch = "aarch64")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_sdt_site {
+    ($provider:literal, $name:literal, $sema:path, $args:literal, $($operands:tt)*) => {
+        // SAFETY: the block executes a single `nop` and otherwise only emits
+        // data into non-executed sections. The operands are read-only register
+        // inputs that the `nop` leaves untouched.
+        #[allow(named_asm_labels)]
+        unsafe {
+            ::core::arch::asm!(
+                "990: nop",
+                ".pushsection .note.stapsdt, \"\", \"note\"",
+                ".balign 4",
+                ".4byte 992f-991f, 994f-993f, 3",
+                "991: .asciz \"stapsdt\"",
+                "992: .balign 4",
+                "993: .8byte 990b",
+                ".8byte _.stapsdt.base",
+                ".8byte {sema}",
+                concat!(".asciz \"", $provider, "\""),
+                concat!(".asciz \"", $name, "\""),
+                concat!(".asciz \"", $args, "\""),
+                "994: .balign 4",
+                ".popsection",
+                ".ifndef _.stapsdt.base",
+                ".pushsection .stapsdt.base, \"axGR\", \"progbits\", .stapsdt.base, comdat",
+                ".weak _.stapsdt.base",
+                ".hidden _.stapsdt.base",
+                "_.stapsdt.base: .space 1",
+                ".size _.stapsdt.base, 1",
+                ".popsection",
+                ".endif",
+                sema = sym $sema,
+                $($operands)*
+                // AArch64 registers render as `x0`, the SDT spelling.
+                options(readonly, nostack, preserves_flags),
+            )
+        }
+    };
+}
+
+/// Reads a semaphore with a direct PC-relative load.
+///
+/// A Rust load of a static from an rlib goes through the GOT, since rustc
+/// cannot rule out the rlib ending up in a dylib where the symbol could be
+/// preempted: a second dependent load on every check. `sys/sdt.h` avoids it
+/// with hidden-visibility semaphores; Rust cannot declare visibility, so the
+/// load is written in `asm!` with a `sym` operand, which the linker resolves
+/// directly.
+///
+/// A Rust `dylib` cannot link a direct reference to a symbol it exports, so
+/// `--cfg anyprobe_dylib` switches back to the plain Rust load.
+#[cfg(all(target_arch = "x86_64", not(anyprobe_dylib)))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_sema_load {
+    ($sema:path) => {{
+        let v: u32;
+        // SAFETY: reads the two bytes of a `static` semaphore, which is valid
+        // for the whole program. Nothing is written.
+        unsafe {
+            ::core::arch::asm!(
+                "movzwl {sema}(%rip), {v:e}",
+                sema = sym $sema,
+                v = out(reg) v,
+                options(att_syntax, readonly, nostack, preserves_flags)
+            );
+        }
+        v
+    }};
+}
+
+#[cfg(all(target_arch = "aarch64", not(anyprobe_dylib)))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_sema_load {
+    ($sema:path) => {{
+        let v: u32;
+        // SAFETY: reads the two bytes of a `static` semaphore, which is valid
+        // for the whole program. Nothing is written.
+        unsafe {
+            ::core::arch::asm!(
+                "adrp {v:x}, {sema}",
+                "ldrh {v:w}, [{v:x}, :lo12:{sema}]",
+                sema = sym $sema,
+                v = out(reg) v,
+                options(readonly, nostack, preserves_flags)
+            );
+        }
+        v
+    }};
+}
+
+#[cfg(anyprobe_dylib)]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_sema_load {
+    ($sema:path) => {
+        $sema.load(::core::sync::atomic::Ordering::Relaxed)
+    };
+}

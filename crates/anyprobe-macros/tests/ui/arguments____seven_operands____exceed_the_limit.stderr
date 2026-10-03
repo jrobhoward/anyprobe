@@ -1,0 +1,5 @@
+error: this probe passes 7 values (`&str` and `&[u8]` count as two); the limit is 6, because macOS x86-64 passes probe arguments in six registers
+ --> tests/ui/arguments____seven_operands____exceed_the_limit.rs:3:11
+  |
+3 |     fn hit(a: &str, b: &str, c: &str, d: u8);
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

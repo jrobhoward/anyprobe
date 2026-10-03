@@ -4,19 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`anyprobe` adds USDT-style probes to Rust functions on Linux, macOS, FreeBSD
-and Windows. `#[anyprobe::probe]` on a function gives it stable-named entry
-and return probes that a tracer attaches to in a running process: SystemTap
-SDT notes on Linux (bpftrace, perf, SystemTap), DTrace USDT on macOS and
-FreeBSD, ETW TraceLogging on Windows. With no tracer attached a probe costs
-one enabled check, and argument encoding does not run. Other targets compile
-the probes to nothing.
+`anyprobe` adds USDT-style probes to Rust on Linux, macOS and Windows: stable
+probe names a tracer attaches to in a running process. SystemTap SDT notes on
+Linux (bpftrace, perf), DTrace USDT on macOS, ETW TraceLogging on Windows.
+With no tracer attached a probe costs one enabled check, and its arguments
+are not computed. Every other target compiles probes to nothing. FreeBSD is
+deferred indefinitely; it gets the no-op backend.
 
 The crate is pre-1.0. `docs/PLAN.md` holds the design, the phases and the
-open questions; read it before changing anything structural. The workspace
-currently holds only `spike/` (`anyprobe-spike`, unpublished): hand-written
-probes per backend that settle the design before the macro exists. Commands
-below that name `anyprobe` or `anyprobe-macros` apply once those crates exist.
+open questions; read it before changing anything structural. Phase 1 (the
+`probes!` macro and the runtime) is in place; phase 2 adds the `#[probe]`
+attribute, `serde`/`debug` encoding and the `autoref` feature. Commands below
+that name those features apply once they exist.
 
 ## Commands
 
@@ -45,22 +44,25 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # without it the `*_tests.rs` files are not compiled, and a `cfg`-gated test
 # referring to something that has been renamed sails straight through. Needs
 # `rustup target add` for each target once.
-for t in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-unknown-freebsd \
-         x86_64-pc-windows-msvc; do
+# FreeBSD stays in the loop: it must keep compiling to the no-op backend.
+for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+         x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
   cargo clippy --workspace --target $t --all-targets -- -Dwarnings || break
 done
 
 # `check` and `clippy` stop before codegen, so they never assemble an `asm!`
 # template. A bad directive or section name in a backend only fails at codegen.
-# `build --lib` reaches codegen and needs no linker, so it runs for every
-# target from any host.
+# `anyprobe` alone defines no probes, so its library build assembles nothing;
+# `anyprobe-check` defines one probe per argument kind. `build --lib` reaches
+# codegen and needs no linker, so it runs for every target from any host.
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
-         x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
-  cargo build -p anyprobe --lib --target $t || break
+         x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+  cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t || break
 done
 
-# Feature combinations. A `cfg` gated on a feature is only compiled in the
-# sets that enable it, so a default build proves nothing about the others.
+# Feature combinations (phase 2: the features do not exist yet). A `cfg` gated
+# on a feature is only compiled in the sets that enable it, so a default build
+# proves nothing about the others.
 for f in "" "--no-default-features" "--features autoref" \
          "--no-default-features --features autoref" "--all-features"; do
   cargo clippy --workspace --all-targets $f -- -Dwarnings || break
@@ -76,10 +78,12 @@ for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
     --all-targets --target-dir target/cfg-dylib -- -Dwarnings || break
 done
 
-# Spike attach checks, one per OS: build, attach the native tracer, and print
-# ok/FAIL per check. The CI jobs run the same scripts. Linux, FreeBSD and
-# macOS ask for sudo; Windows needs an elevated prompt. On macOS,
-# SPIKE_ATTACH=0 runs only the checks that need no root.
+# Attach checks, one per OS: build, attach the native tracer, and print
+# ok/FAIL per check. The CI jobs run the same scripts. They check the spike by
+# default; ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example,
+# which has the same probes. Linux and macOS ask for sudo; Windows needs an
+# elevated prompt. On macOS, SPIKE_ATTACH=0 runs only the checks that need no
+# root, and SPIKE_TARGET=x86_64-apple-darwin checks an Intel build.
 spike/scripts/attach-linux.sh            # bpftrace
 spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
 # SystemTap (not in CI) needs file offsets equal to addresses, which rust-lld
@@ -87,7 +91,7 @@ spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
 RUSTFLAGS="-C link-arg=-Wl,-z,separate-loadable-segments" \
   CARGO_TARGET_DIR=target/sep-seg spike/scripts/attach-linux-stap.sh
 spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
-sh spike/scripts/attach-freebsd.sh       # dtrace -p, plus a -Z -c report
+sh spike/scripts/attach-freebsd.sh       # deferred: spike only, dtrace -p and -Z -c
 pwsh spike\scripts\attach-windows.ps1     # logman + tracerpt
 
 # Supply chain — run before adding or updating any dependency. `advisories`
@@ -106,11 +110,22 @@ cargo +1.88.0 check --workspace --all-targets
 See `docs/PLAN.md` for the design. Summary a contributor needs day to day:
 
 - Cargo workspace, edition 2024, `rust-version = 1.88.0`.
-- `crates/anyprobe` is the facade and runtime: per-OS backends as
-  `cfg`-selected modules, the encoders, and the `#[doc(hidden)] __private`
-  module that generated code calls into.
-- `crates/anyprobe-macros` is the `#[probe]` attribute. Its compile-fail
+- `crates/anyprobe-macros`: the `probes!` proc macro (phase 2 adds
+  `#[probe]`). Target-independent: it validates the input, computes every
+  string each backend needs (SDT argument format, DTrace symbol names, ETW
+  field calls, register assignments) and emits one
+  `::anyprobe::__private::define_probe!` per probe. Its compile-fail
   behaviour is pinned by trybuild tests in `crates/anyprobe-macros/tests/ui/`.
+- `crates/anyprobe`: the facade and runtime. One `cfg`-selected backend module
+  per platform (`linux.rs`, `macos.rs`, `windows.rs`, `noop.rs`), each
+  defining the `macro_rules!` that `define_probe!` resolves to. All `asm!` and
+  `unsafe` live here, not in proc-macro output. `windows.rs` also holds the
+  ETW provider runtime.
+- `crates/anyprobe-check` (unpublished): one probe per argument kind, so a
+  library build reaches every backend's codegen.
+- `spike/` (`anyprobe-spike`, unpublished): the phase-0 hand-written probes,
+  the attach scripts, `examples/inspect_dof.rs`, and the deferred FreeBSD
+  prototype.
 
 ## Platform constraints worth knowing before editing a backend
 
@@ -183,13 +198,15 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
 
 - **build:** ubuntu, macos and windows matrix: build, test, clippy and doc
   per feature set.
-- **freebsd:** the same in a FreeBSD VM.
+- **freebsd:** the spike in a FreeBSD VM, on manual dispatch only and never
+  failing the workflow (FreeBSD is deferred).
 - **cross-check:** every target with `--all-targets`, plus `build --lib` per
   target for the `asm!` templates.
 - **probe attach:** each OS attaches with the native tool where the runner
-  allows it. Linux uses bpftrace under sudo, Windows uses an ETW session as
-  admin, and FreeBSD uses dtrace as root in the VM. macOS runners have SIP on,
-  so that job only checks that the probe metadata is present in the binary.
+  allows it, for both the spike and the anyprobe `work` example. Linux uses
+  bpftrace under sudo and Windows an ETW session as admin. macOS runners have
+  SIP on, so that job checks the probe metadata with `inspect_dof` and reports
+  a `sudo dtrace` attempt without failing on it.
   A job that cannot verify fails with an explanation rather than skipping
   silently.
 - **msrv:** `dtolnay/rust-toolchain@1.88.0`, `check --locked` and
@@ -197,7 +214,8 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
 - **licenses** and **advisories:** separate jobs. Advisories also runs on a
   weekly cron and builds once against freshly resolved dependencies
   (`cargo update`).
-- **package:** `cargo publish --locked --dry-run` per crate.
+- **package:** `cargo publish --locked --dry-run` for `anyprobe-macros` and
+  `anyprobe` together.
 - **semver:** `cargo-semver-checks`, skipped with a notice until a baseline
   exists on crates.io.
 - **fmt.**

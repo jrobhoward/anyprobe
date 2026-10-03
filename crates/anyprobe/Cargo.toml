@@ -1,0 +1,42 @@
+[package]
+name = "anyprobe"
+version = "0.1.0"
+description = "USDT-style probes for Rust: SystemTap SDT on Linux, DTrace on macOS, ETW on Windows"
+keywords = ["tracing", "usdt", "dtrace", "bpftrace", "etw"]
+readme = "../../README.md"
+categories = ["development-tools::debugging", "development-tools::profiling"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Exact: generated code calls `anyprobe::__private`, which is not covered by
+# semver, so the macro and the runtime are released in lockstep.
+anyprobe-macros = { version = "=0.1.0", path = "../anyprobe-macros" }
+
+# Microsoft's TraceLogging without macros. The `tracelogging` crate's macros
+# expand to `::tracelogging::...` paths, which would make every user add it as
+# a direct dependency.
+[target.'cfg(windows)'.dependencies]
+tracelogging_dynamic = "1.2"
+
+[dev-dependencies]
+# 0.5, not 0.8: 0.8 builds a C dependency (`alloca`) unconditionally, which
+# breaks `cargo clippy --all-targets --target ...` for every cross target.
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "disabled_cost"
+harness = false

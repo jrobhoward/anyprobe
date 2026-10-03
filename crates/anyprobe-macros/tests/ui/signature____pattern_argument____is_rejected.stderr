@@ -1,0 +1,5 @@
+error: probe arguments must be plain names
+ --> tests/ui/signature____pattern_argument____is_rejected.rs:3:12
+  |
+3 |     fn hit((a, b): (u8, u8));
+  |            ^^^^^^

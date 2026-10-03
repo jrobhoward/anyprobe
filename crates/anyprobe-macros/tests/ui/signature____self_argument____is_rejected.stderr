@@ -1,0 +1,5 @@
+error: probes take no `self` argument
+ --> tests/ui/signature____self_argument____is_rejected.rs:3:12
+  |
+3 |     fn hit(&self);
+  |            ^

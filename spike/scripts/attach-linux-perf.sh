@@ -21,6 +21,16 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 [ $# -gt 0 ] || set -- release release-lto
 
+# ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example, which has
+# the spike's provider, probes and command line; the default checks the spike.
+if [ "${ATTACH_CRATE:-spike}" = anyprobe ]; then
+  pkg_args=(-p anyprobe --example work)
+  bin_rel=examples/work
+else
+  pkg_args=(-p anyprobe-spike)
+  bin_rel=anyprobe-spike
+fi
+
 command -v perf >/dev/null || { echo "perf not found; install it first" >&2; exit 2; }
 if [ "$(id -u)" -eq 0 ]; then sudo=""; else sudo="sudo"; fi
 
@@ -79,12 +89,12 @@ per_iteration() {
 for profile in "$@"; do
   echo "== $profile"
   profile_failed=0
-  if ! cargo build -q -p anyprobe-spike --profile "$profile"; then
+  if ! cargo build -q "${pkg_args[@]}" --profile "$profile"; then
     echo "  FAIL  build"
     failed=1
     continue
   fi
-  bin="$PWD/target/$profile/anyprobe-spike"
+  bin="$PWD/target/$profile/$bin_rel"
   log="$work/$profile.log"
   probe_out="$work/$profile.probe"
   data="$work/$profile.data"

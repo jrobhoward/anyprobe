@@ -1,0 +1,5 @@
+error: duplicate probe name in this block
+ --> tests/ui/probe_name____duplicate____is_rejected.rs:4:8
+  |
+4 |     fn hit(x: u8);
+  |        ^^^

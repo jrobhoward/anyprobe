@@ -1,0 +1,5 @@
+error: probes cannot be generic
+ --> tests/ui/signature____generic____is_rejected.rs:3:12
+  |
+3 |     fn hit<T>(x: u8);
+  |            ^
