@@ -11,15 +11,10 @@ USDT registered at startup on FreeBSD x86-64, ETW TraceLogging on Windows.
 With no tracer attached a probe costs one enabled check, and its arguments
 are not computed. Every other target compiles probes to nothing.
 
-The crate is pre-1.0. `docs/PLAN.md` holds the design, the phases and the
-open questions; read it before changing anything structural. Phases 1 (the
-`probes!` macro and the runtime), 2 (the `#[probe]` attribute,
-`serde`/`debug` encoding and the `autoref` feature) and 3 (`async fn`,
-`unwind`, `symbol`) and 4 (the probe registry, `anyprobe::list()`, and the
-`cargo-anyprobe` tool) are in place. Phase 6 replaces the walkthrough output
-in `docs/usage/` and the costs in `docs/PERFORMANCE.md` with captures from
-real hosts. Phase 7 (the FreeBSD backend, `anyprobe::registration()`) is in
-place; its open items are listed in `docs/PLAN.md`.
+The crate is pre-1.0. `docs/ARCHITECTURE.md` holds the design and the
+reasons behind it; read it before changing anything structural.
+`docs/PLAN.md` lists only the work still planned (checks not yet run, open
+design questions, release steps) and is deleted once that list is empty.
 
 ## Commands
 
@@ -164,7 +159,7 @@ cargo +1.88.0 check --workspace --all-targets
 
 ## Architecture
 
-See `docs/PLAN.md` for the design. Summary a contributor needs day to day:
+See `docs/ARCHITECTURE.md` for the design. Summary a contributor needs day to day:
 
 - Cargo workspace, edition 2024, `rust-version = 1.88.0`.
 - `crates/anyprobe-macros`: the `probes!` proc macro (`probes.rs`) and the
@@ -407,7 +402,7 @@ across them:
 | File | Holds | Scope |
 |---|---|---|
 | `README.md` | What the crate does, how to use it, and the caveats that change how it should be used | Link out rather than expand |
-| `docs/PLAN.md` | The pre-1.0 design, phases and open questions | Exempt from the writing-style rules. Split into `ARCHITECTURE.md` and `GAPS.md` once the design settles, then deleted |
+| `docs/PLAN.md` | Work still planned before 1.0: unrun checks, open design questions, release steps | Exempt from the writing-style rules. Remove finished items rather than marking them done; a settled decision moves to `ARCHITECTURE.md` or `GAPS.md`. Deleted when empty |
 | `docs/ARCHITECTURE.md` | Module map and why each backend was chosen over its alternatives | Update when a design decision changes; not a development log |
 | `docs/GAPS.md` | Every known limitation, why it exists, and what changing it costs | One section per gap. Add to it rather than quietly narrowing scope |
 | `docs/PERFORMANCE.md` | The cost of a probe with and without a tracer, per platform, and how it was measured | Measured numbers with the machine they came from; say plainly what has not been measured |

@@ -3,8 +3,7 @@
 How the workspace is laid out and why each backend works the way it does.
 Limitations are in [GAPS.md](GAPS.md) and costs in
 [PERFORMANCE.md](PERFORMANCE.md), which also shows what each tracer does when
-it attaches; the pre-1.0 design history is in [PLAN.md](PLAN.md) until it is
-split into these files.
+it attaches. The work still planned before 1.0 is in [PLAN.md](PLAN.md).
 
 ## Crates
 
@@ -128,6 +127,34 @@ Probes compile to nothing, and the enabled check is the constant `false`, so
 arguments are never computed. FreeBSD on architectures other than x86-64 is
 in this group.
 
+## Decisions behind the macros
+
+- `#[probe]` runs the body through `call_once(impl FnOnce() -> R)` rather
+  than calling a closure directly. A closure called in place is inferred
+  `FnMut`, and a `&mut self` method could then not return a borrow of
+  `self`.
+- An `async fn` stays an `async fn`, with the checks as ordinary statements
+  in its body, rather than returning a wrapper future. `Send`, lifetimes and
+  `async fn` in traits therefore behave as they did without the attribute.
+  `poll` and `pending` probes would need a wrapper and are not provided.
+- The cold helpers are not generic. Encoded arguments reach them as a
+  `Value`, an enum of the native kinds plus `&dyn Debug` and an object-safe
+  `Serialize`, so a generic function gets one helper and one probe site, not
+  one per instantiation, and the probe module never names the caller's
+  types.
+- The provider is given per attribute and defaults to the crate name. A
+  crate-root `provider!` cannot work: a proc macro cannot read it, and a
+  `macro_rules!` callback through `crate::` is rejected for macro-expanded
+  `macro_export` macros.
+- `autoref` chooses `Serialize`, then `Debug`, and never `Native`. The proc
+  macro has to know each argument's operand count, and a trait-selected
+  native encoding would change it.
+- `u128` and `i128` are not native: they would need two operands, in a
+  format no tracer reads as one value. `debug` covers them.
+- `--cfg anyprobe_dylib` is a cfg, not a Cargo feature. Cargo unifies
+  features, so one crate enabling it would slow the checks of every crate in
+  the build.
+
 ## Argument encoding
 
 `serde` and `debug` values are written into a thread-local buffer and passed as
@@ -162,7 +189,7 @@ flowchart LR
 |---|---|
 | ELF (Linux, FreeBSD) | `anyprobe_probes`, a C identifier, so `__start_` and `__stop_` bound it |
 | Mach-O | `__DATA,__anyprobe` with `no_dead_strip`, bounded by `section$start` and `section$end` |
-| PE | `.aprobe$b` between `.aprobe$a` and `.aprobe$c` markers |
+| PE | `.aprobe$b` between `.aprobe$a` and `.aprobe$c` markers; each record's object carries an `/INCLUDE:` directive, which `/OPT:REF` honours |
 
 The parser skips zero padding between records, rejects an unknown version, and
 never panics on malformed input. A change to the record layout bumps
