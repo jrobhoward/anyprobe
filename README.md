@@ -13,9 +13,21 @@ attached, a probe costs one enabled check and its arguments are not computed.
 | Windows | ETW TraceLogging | WPR, PerfView, logman |
 | anything else, FreeBSD included | none; probes compile to nothing | none |
 
-Status: pre-release. This is the low-level `probes!` macro. An attribute that
-probes a function's entry and return, with `serde` and `Debug` arguments, is
-planned; see [docs/PLAN.md](docs/PLAN.md).
+Status: pre-release. What exists today is `probes!`, which defines probes that
+code checks and fires explicitly, as in the example below. A
+`#[anyprobe::probe]` attribute is planned that probes a function's entry and
+return with nothing added to its body:
+
+```rust,ignore
+#[anyprobe::probe]
+fn handle(id: u64, path: &str) {
+    // ...
+}
+```
+
+The attribute will generate the enabled checks and `fire` calls, and encode
+other argument types with `serde` or `Debug`. `probes!` stays for probes in
+the middle of a function. The design is in [docs/PLAN.md](docs/PLAN.md).
 
 ## Example
 
@@ -33,7 +45,6 @@ fn handle(id: u64, path: &str) {
     }
     // ...
 }
-# handle(1, "/");
 ```
 
 Each probe becomes a module with `enabled()` and `fire(...)`. Keep anything
