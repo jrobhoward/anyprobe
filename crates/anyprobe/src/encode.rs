@@ -8,7 +8,8 @@
 //! Each payload is followed by a NUL byte that its length excludes, so tools
 //! that only read NUL-terminated strings (perf, gdb) read it too. A payload
 //! longer than [`MAX_LEN`] bytes is cut at the last whole UTF-8 character that
-//! fits.
+//! leaves room for [`CUT_MARKER`], which then ends it. A payload ends with the
+//! marker only if it was cut.
 
 use core::fmt::{self, Debug, Write as _};
 use core::ops::Range;
@@ -16,6 +17,9 @@ use std::cell::RefCell;
 
 /// Longest payload, in bytes, before its terminating NUL.
 pub const MAX_LEN: usize = 4096;
+
+/// The last bytes of a payload that was cut at [`MAX_LEN`].
+pub const CUT_MARKER: &str = "...";
 
 /// Initial capacity of each thread's buffer, so a first small payload does
 /// not grow it several times.
@@ -196,15 +200,25 @@ fn with_buffer(f: impl FnOnce(&mut Vec<u8>)) {
 /// Appends one payload with `write` and its NUL, and returns the payload's
 /// range. The payload is valid UTF-8: [`Capped`] cuts `str` writes at a
 /// character boundary, and anything else (serde's byte writes) is cut back to
-/// the last whole character here.
+/// the last whole character here. A payload that did not fit is cut further,
+/// to make room for [`CUT_MARKER`], and ends with it.
 fn append(buf: &mut Vec<u8>, write: impl FnOnce(&mut Capped<'_>)) -> Range<usize> {
     let start = buf.len();
-    write(&mut Capped {
+    let mut out = Capped {
         buf,
         limit: start + MAX_LEN,
-    });
+        cut: false,
+    };
+    write(&mut out);
+    let cut = out.cut;
+    if cut {
+        buf.truncate(buf.len().min(start + MAX_LEN - CUT_MARKER.len()));
+    }
     if let Err(e) = core::str::from_utf8(&buf[start..]) {
         buf.truncate(start + e.valid_up_to());
+    }
+    if cut {
+        buf.extend_from_slice(CUT_MARKER.as_bytes());
     }
     let end = buf.len();
     buf.push(0);
@@ -223,10 +237,16 @@ fn as_str(buf: &[u8], range: Range<usize>) -> &str {
 pub struct Capped<'a> {
     buf: &'a mut Vec<u8>,
     limit: usize,
+    /// Set once a write did not fit. Every later write is refused, so a
+    /// shorter one cannot land after the gap.
+    cut: bool,
 }
 
 impl fmt::Write for Capped<'_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.cut {
+            return Err(fmt::Error);
+        }
         let room = self.limit.saturating_sub(self.buf.len());
         if s.len() <= room {
             self.buf.extend_from_slice(s.as_bytes());
@@ -237,18 +257,24 @@ impl fmt::Write for Capped<'_> {
             cut -= 1;
         }
         self.buf.extend_from_slice(&s.as_bytes()[..cut]);
+        self.cut = true;
         Err(fmt::Error)
     }
 }
 
 impl std::io::Write for Capped<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
         let room = self.limit.saturating_sub(self.buf.len());
-        if room == 0 && !bytes.is_empty() {
+        if self.cut || room == 0 {
+            self.cut = true;
             return Err(std::io::ErrorKind::WriteZero.into());
         }
         let n = bytes.len().min(room);
         self.buf.extend_from_slice(&bytes[..n]);
+        self.cut = n < bytes.len();
         Ok(n)
     }
 

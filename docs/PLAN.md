@@ -8,8 +8,8 @@ remove the references to it from `CLAUDE.md` and `ARCHITECTURE.md`.
 
 ## Where to pick up
 
-Linux, FreeBSD (VM) and macOS (Apple M1) have run everything in section 1
-they can. Next is Windows:
+FreeBSD (VM) and macOS (Apple M1) have run everything in section 1 they
+can; Linux has one item left (bpftrace on `same_name`). Next is Windows:
 
 ### Windows
 
@@ -48,6 +48,10 @@ the claim.
 - [ ] A probe in a `cdylib` loaded with `LoadLibrary` can be traced on
       Windows (`.dll`). Linux, FreeBSD and macOS are done. GAPS.md, "Shared
       libraries".
+- [ ] Linux: how bpftrace handles two methods named `new` that share probe
+      names (the `same_name` example) — whether it attaches to both and
+      reads each one's arguments. GAPS.md, "Methods with the same name",
+      says it has not been checked.
 - [ ] Windows drops an event over 64 KB (a `&str` of 70,000 bytes) and cuts
       a string field at 65,535 bytes. GAPS.md, "Large native strings and
       byte slices".
@@ -73,37 +77,8 @@ the claim.
 - [ ] FreeBSD startup cost: time the constructor (parse, DOF build, ioctl)
       for a binary with many probes, and add it to `PERFORMANCE.md`.
 
-## 3. Open design questions
+## 3. Release
 
-Decide each one, or move it to GAPS.md as a known limitation.
-
-- [ ] Crate-wide provider. A crate whose name ends in a digit (`http2`,
-      `sha2`) cannot use the default provider and must repeat
-      `provider = "..."` on every attribute. Options: append `_` to such
-      names by default (silent; `probes!` would need the same rule); read
-      `[package.metadata.anyprobe] provider` from the manifest via
-      `CARGO_MANIFEST_DIR` (rebuild tracking unclear); a textually scoped
-      `macro_rules!` defined at the crate root (works only for modules
-      declared after it, and becomes mandatory).
-- [ ] Truncation is silent. Encoded values are cut at 4096 bytes with no
-      flag. A flags operand would cost one of the six values, and bpftrace's
-      own 64-byte default cuts long before 4096.
-- [ ] The 4096-byte cap is a constant. Making it configurable at runtime
-      costs a load in the cold path only.
-- [ ] Method names: two `new` methods share probe names unless one sets
-      `name`. A `#[probe_impl(prefix = "Conn")]` on the `impl` block could
-      supply a prefix. On FreeBSD the shared name is also indistinguishable
-      by `probefunc`.
-- [ ] Windows: `registration()` always returns `Ok`. ETW registration is
-      lazy and retried; report a refused registration through it, or say in
-      the docs that it never will.
-
-## 4. Release
-
-- [ ] SystemTap upstream report (rust-lld file offsets). The draft was
-      removed from the tree in `e0b81e8`; recover it with
-      `git show ca61f78:docs/upstream/systemtap-lld-file-offsets.md`, then
-      file it or drop this item.
 - [ ] First publish of `anyprobe-macros`, `anyprobe` and `cargo-anyprobe`.
       The `semver` CI job starts checking once a baseline is on crates.io.
 - [ ] When this file is empty: delete it, and remove its references from
@@ -122,3 +97,10 @@ Kept out unless someone asks; listed so they are not rediscovered as gaps.
   (`#[async_trait]`).
 - SystemTap in CI: it needs building from source on current kernels;
   `attach-linux-stap.sh` stays for checking by hand.
+- The SystemTap upstream report (rust-lld file offsets). File it during a
+  Linux session if convenient: the draft is at
+  `git show ca61f78:docs/upstream/systemtap-lld-file-offsets.md` and needs
+  its C reproducer run under `stap` first. GAPS.md documents the workaround.
+- A runtime setter for the 4096-byte encoding cap, and
+  `#[probe_impl(prefix = "...")]` for methods that share a name. Both are
+  additive; GAPS.md has each limitation.

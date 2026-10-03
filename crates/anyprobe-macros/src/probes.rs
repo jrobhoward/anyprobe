@@ -124,7 +124,10 @@ fn combine(errors: &mut Option<syn::Error>, e: syn::Error) {
 }
 
 /// The provider name: the literal given, or else `crate_name`, the crate being
-/// compiled (`CARGO_CRATE_NAME`, set by Cargo while it compiles).
+/// compiled (`CARGO_CRATE_NAME`, set by Cargo while it compiles). DTrace
+/// appends the pid to a provider name, so a crate name that ends in a digit
+/// gets a `_` after it (`http2` becomes `http2_`); a name given explicitly is
+/// never changed.
 pub(crate) fn provider_name(
     given: Option<&LitStr>,
     crate_name: Option<&str>,
@@ -132,6 +135,9 @@ pub(crate) fn provider_name(
     let (name, span) = match given {
         Some(lit) => (lit.value(), lit.span()),
         None => match crate_name {
+            Some(name) if name.ends_with(|c: char| c.is_ascii_digit()) => {
+                (format!("{name}_"), Span::call_site())
+            }
             Some(name) => (name.to_owned(), Span::call_site()),
             None => {
                 return Err(syn::Error::new(

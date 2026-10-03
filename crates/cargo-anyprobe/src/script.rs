@@ -87,9 +87,11 @@ pub fn dtrace(binary: &Path, groups: &[Group<'_>]) -> String {
     let mut out = format!(
         "/*\n * {GENERATED} for {}\n * Run: sudo dtrace -p PID -s THIS_FILE\n */\n\n\
          #pragma D option quiet\n\
-         /* The longest encoded argument, 4095 bytes, and its NUL. */\n\
-         #pragma D option strsize=4096\n",
-        binary.display()
+         /* The longest encoded argument, {max} bytes, and its NUL. */\n\
+         #pragma D option strsize={strsize}\n",
+        binary.display(),
+        max = anyprobe::encode::MAX_LEN,
+        strsize = anyprobe::encode::MAX_LEN + 1,
     );
     for group in groups {
         let full = group.full_name();

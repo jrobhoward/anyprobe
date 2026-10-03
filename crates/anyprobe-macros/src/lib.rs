@@ -40,7 +40,9 @@ mod probes;
 ///
 /// `provider = "...";` is optional and defaults to the crate name. It must be
 /// ASCII letters, digits and `_`, not start or end with a digit (DTrace
-/// appends the process id to it), and be at most 58 bytes. On Windows it is
+/// appends the process id to it), and be at most 58 bytes. A crate name that
+/// ends in a digit gets a `_` after it, so the default for a crate named
+/// `http2` is `http2_`; a name given here is used as written. On Windows it is
 /// also the ETW provider name. The probes in one block share one provider.
 ///
 /// # Probes
@@ -93,8 +95,8 @@ pub fn probes(input: TokenStream) -> TokenStream {
 /// - `name = "..."`: the probes' base name; the default is the function's
 ///   name. Methods have no access to their type's name, so two methods named
 ///   `new` share probe names unless one sets `name`.
-/// - `provider = "..."`: the default is the crate name. The rules are those
-///   of [`probes!`](macro@probes).
+/// - `provider = "..."`: the default is the crate name, with a `_` after a
+///   trailing digit. The rules are those of [`probes!`](macro@probes).
 /// - `serde(a, b)`: encode these arguments as JSON (needs the `serde`
 ///   feature, on by default).
 /// - `debug(a, b)`: encode these arguments with `{:?}`.
@@ -150,7 +152,8 @@ pub fn probes(input: TokenStream) -> TokenStream {
 /// or `serde(self)`, and so is an argument named `_`.
 ///
 /// Encoded values reach the tracer as a string (pointer and length),
-/// followed by a NUL byte, and are cut at 4096 bytes. When the arguments
+/// followed by a NUL byte, and are cut at 4096 bytes; a cut value ends with
+/// `...`. When the arguments
 /// would take more than six values (`&str`, `&[u8]` and encoded arguments
 /// take two), they are passed instead as one JSON object of all of them,
 /// `{"id":1,"path":"/x",...}`.

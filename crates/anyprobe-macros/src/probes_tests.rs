@@ -90,10 +90,32 @@ fn provider_name____no_crate_name____asks_for_one() {
 }
 
 #[test]
-fn provider_name____crate_name_ends_in_digit____suggests_setting_one() {
-    let err = provider_name(None, Some("http2")).unwrap_err().to_string();
+fn provider_name____crate_name_ends_in_digit____gets_an_underscore() {
+    assert_eq!(provider_name(None, Some("http2")).unwrap(), "http2_");
+}
+
+#[test]
+fn provider_name____given_name_ends_in_digit____is_rejected() {
+    let lit: LitStr = syn::parse_quote!("http2");
+    let err = provider_name(Some(&lit), Some("my_crate"))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("must not end with a digit"), "{err}");
+}
+
+#[test]
+fn provider_name____crate_name_too_long____suggests_setting_one() {
+    let long = "a".repeat(names::MAX_PROVIDER_LEN + 1);
+    let err = provider_name(None, Some(&long)).unwrap_err().to_string();
+    assert!(err.contains("the limit is"), "{err}");
     assert!(err.contains("the default is the crate name"), "{err}");
+}
+
+#[test]
+fn provider_name____crate_name_at_limit_ending_in_digit____suggests_setting_one() {
+    let name = format!("{}2", "a".repeat(names::MAX_PROVIDER_LEN - 1));
+    let err = provider_name(None, Some(&name)).unwrap_err().to_string();
+    assert!(err.contains("the limit is"), "{err}");
 }
 
 #[test]

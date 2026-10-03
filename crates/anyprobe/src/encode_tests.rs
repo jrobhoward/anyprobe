@@ -98,23 +98,73 @@ fn object____control_characters____are_escaped() {
 }
 
 #[test]
-fn text____longer_than_the_cap____is_cut_at_a_character_boundary() {
-    // Three-byte characters, so the cap falls inside one.
+fn text____longer_than_the_cap____is_cut_at_a_character_boundary_and_marked() {
+    // Three-byte characters, so the cut falls inside one.
     let long = "€".repeat(MAX_LEN);
     let (s, nul) = one(Value::debug(&long));
     assert!(s.len() <= MAX_LEN);
-    assert!(s.len() > MAX_LEN - 4);
+    assert!(s.len() > MAX_LEN - 3 - CUT_MARKER.len());
     assert!(s.starts_with("\"€€"));
+    assert!(s.ends_with("€..."), "{}", &s[s.len() - 10..]);
     assert_eq!(nul, 0);
+}
+
+/// `Debug` output that is the string itself, unquoted, so its length is
+/// exact.
+struct Raw(String);
+
+impl Debug for Raw {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[test]
+fn text____exactly_the_cap____is_whole_and_unmarked() {
+    let full = "a".repeat(MAX_LEN);
+    let (s, nul) = one(Value::debug(&Raw(full.clone())));
+    assert_eq!(s, full);
+    assert_eq!(nul, 0);
+}
+
+#[test]
+fn text____one_byte_over_the_cap____is_marked() {
+    let over = "a".repeat(MAX_LEN + 1);
+    let (s, _) = one(Value::debug(&Raw(over.clone())));
+    assert_eq!(s.len(), MAX_LEN);
+    assert_eq!(
+        &s[..MAX_LEN - CUT_MARKER.len()],
+        &over[..MAX_LEN - CUT_MARKER.len()]
+    );
+    assert!(s.ends_with(CUT_MARKER));
+}
+
+#[test]
+fn object____cut_inside_a_value____writes_nothing_after_the_cut() {
+    // The first value ends two bytes short of the cap with a three-byte
+    // character that does not fit; the `,` and the next name would.
+    let first = format!("{}€", "a".repeat(MAX_LEN - 8));
+    let s = object_of(["a", "b"], [Value::Str(&first), Value::U64(1)]);
+    assert!(s.len() <= MAX_LEN);
+    assert!(s.ends_with("aaa..."), "{}", &s[s.len() - 10..]);
+    assert!(!s.contains("\"b\""), "{}", &s[s.len() - 10..]);
 }
 
 #[cfg(feature = "serde")]
 #[test]
-fn text____serde_longer_than_the_cap____is_valid_utf8_within_the_cap() {
+fn text____serde_longer_than_the_cap____is_valid_utf8_within_the_cap_and_marked() {
     let long = vec!["€"; MAX_LEN];
     let (s, _) = one(Value::serde(&long));
     assert!(s.len() <= MAX_LEN);
     assert!(s.starts_with(r#"["€","€""#));
+    assert!(s.ends_with(CUT_MARKER));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn text____serde_within_the_cap____is_unmarked() {
+    let (s, _) = one(Value::serde(&["a", "b"]));
+    assert_eq!(s, r#"["a","b"]"#);
 }
 
 #[test]

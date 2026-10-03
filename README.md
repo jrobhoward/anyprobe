@@ -89,7 +89,8 @@ the native types only, up to six values per probe (`&str` and `&[u8]` count
 as two: pointer and length).
 
 The provider defaults to the crate name. DTrace does not allow one that ends
-in a digit, so a crate named like `http2` sets `provider = "..."`.
+in a digit, so such a crate name gets a `_` after it: the probes of a crate
+named `http2` have the provider `http2_` unless it sets `provider = "..."`.
 
 ## Attaching
 
@@ -126,7 +127,8 @@ An encoded argument (`debug`, `serde`, or arguments combined into one JSON
 object) is a string: a pointer and a length, followed by a NUL byte. bpftrace
 reads it with `str(ptr, len)`, dtrace with `copyinstr(ptr, len)`; perf and
 gdb read it as a NUL-terminated string. Encoded values are cut at 4096
-bytes, and bpftrace reads 64 by default (`BPFTRACE_MAX_STRLEN`). A native
+bytes, and a cut value ends with `...`; bpftrace reads 64 bytes by default
+(`BPFTRACE_MAX_STRLEN`). A native
 `&str` has no NUL after it, so perf and gdb do not read one correctly.
 
 ## Listing probes

@@ -22,6 +22,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `anyprobe::registration()` and `RegistrationError`: whether the probes of
   this executable or library are registered with the tracer, and if not,
   why. Only FreeBSD registers at runtime; every other target returns `Ok`.
+  On Windows a provider registers on the first enabled check of one of its
+  probes, so a refusal there is not reported.
 - Documentation: walkthroughs that attach bpftrace, dtrace and ETW to the
   new `demo` example (`docs/usage/`), the cost of a probe with and without
   a tracer on each platform (`docs/PERFORMANCE.md`), and a comparison with
@@ -54,8 +56,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `skip(..)`, `native(..)` and `ret = native | serde | debug`. Integers,
   `bool`, `char`, raw pointers, `&str`, `&[u8]` and references to scalars
   are passed natively; any other argument must be listed. Encoded values are
-  NUL-terminated strings, cut at 4096 bytes. Arguments that would take more
-  than six values are passed as one JSON object.
+  NUL-terminated strings, cut at 4096 bytes; a cut value ends with `...`.
+  Arguments that would take more than six values are passed as one JSON
+  object.
 - `Native`: lets `native(..)` pass a type alias or newtype as one 64-bit
   value.
 - Features: `serde` (default) for JSON encoding; `autoref` to encode unlisted
@@ -66,15 +69,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `probes!`: defines probes, each a module with `enabled()` and `fire(...)`.
   Arguments are integers up to 64 bits, `bool`, raw pointers, `&str` and
   `&[u8]`, at most six values per probe. The provider defaults to the crate
-  name.
+  name, with a `_` after it when it ends in a digit, which DTrace does not
+  allow (`http2` becomes `http2_`); `provider = "..."` sets another, and one
+  that ends in a digit is rejected. The same default applies to `#[probe]`.
 - Linux (x86-64, AArch64): SystemTap SDT notes with semaphores, for bpftrace
   and perf. `--cfg anyprobe_dylib` for Rust `dylib` crates.
 - macOS (x86-64, AArch64): DTrace USDT probes built by the linker.
 - Windows: ETW TraceLogging events; the provider registers with ETW on the
   first enabled check of any of its probes.
-- Every other target, FreeBSD included: probes compile to nothing.
+- Every other target, FreeBSD on architectures other than x86-64 included:
+  probes compile to nothing.
 
 ### Fixed
+
+- `cargo anyprobe dtrace`: the D script set `strsize` to 4096, one byte short
+  of the longest encoded value and its NUL, so dtrace dropped the last byte
+  of a value cut at the limit. It now sets 4097.
 
 - Linux: probes could stay off under perf and `bpftrace -c`, depending on
   how rust-lld laid out the binary. The kernel raises a semaphore by its file

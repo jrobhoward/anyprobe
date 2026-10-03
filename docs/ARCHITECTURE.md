@@ -146,6 +146,16 @@ in this group.
   crate-root `provider!` cannot work: a proc macro cannot read it, and a
   `macro_rules!` callback through `crate::` is rejected for macro-expanded
   `macro_export` macros.
+- A crate name that ends in a digit (`http2`, `sha2`) gets a `_` after it as
+  the default provider, since DTrace appends the pid to the provider name.
+  The alternatives were a provider read from the environment, set by a
+  `build.rs` with `cargo:rustc-env`, or from `[package.metadata.anyprobe]`.
+  Both need configuration in every such crate, and the manifest needs a TOML
+  parser in the proc macro and a way to track the file for rebuilds. The rule
+  needs nothing, gives the same name on every platform, and a name given
+  with `provider` is used as written and still rejected if it ends in a
+  digit. Either alternative could be added later without changing the
+  rule.
 - `autoref` chooses `Serialize`, then `Debug`, and never `Native`. The proc
   macro has to know each argument's operand count, and a trait-selected
   native encoding would change it.
@@ -159,7 +169,13 @@ in this group.
 
 `serde` and `debug` values are written into a thread-local buffer and passed as
 a pointer and a length, with a NUL after the bytes. Values are cut at 4096
-bytes on a character boundary. A probe that fires while another is being
+bytes on a character boundary, and a cut value ends with `...` in place of
+its last bytes. The marker uses none of the six argument slots and needs no
+change in a tracer; a flag operand would have taken a slot from every
+encoded probe. Once a write does not fit, the encoder refuses every later
+write, so a short one cannot land after the gap. The limit is a constant:
+the tracers' own defaults (64 bytes for bpftrace, 256 for dtrace) are lower,
+and a runtime setter can be added later without breaking anything. A probe that fires while another is being
 written on the same thread is dropped, not panicked on.
 
 `autoref` picks `Serialize`, then `Debug`, by method resolution on a wrapper

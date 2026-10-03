@@ -139,8 +139,8 @@ $ cat demo.d
  */
 
 #pragma D option quiet
-/* The longest encoded argument, 4095 bytes, and its NUL. */
-#pragma D option strsize=4096
+/* The longest encoded argument, 4096 bytes, and its NUL. */
+#pragma D option strsize=4097
 
 demo$target:::checkout-entry
 {

@@ -59,12 +59,13 @@ no fallback.
 ### Encoded values are cut
 
 An encoded argument (`debug`, `serde`, collapsed arguments) is cut at 4096
-bytes, at a character boundary, without a marker. The tracer may read less:
+bytes, at a character boundary, and then ends with `...` in place of its
+last bytes. A value that ends with `...` on its own is indistinguishable
+from a cut one. The tracer may read less, and nothing marks that cut:
 bpftrace reads 64 bytes unless `BPFTRACE_MAX_STRLEN` is raised, and dtrace
 256 unless `strsize` is raised (the scripts `cargo anyprobe dtrace` writes
-set it to 4096). A flag operand to say "truncated" would use one of the six
-argument slots. The limit is a constant; making it configurable would cost a
-load in the cold path only.
+set it to 4097, the longest value and its NUL). The limit is a constant;
+making it configurable would cost a load in the cold path only.
 
 ### Large native strings and byte slices
 
@@ -93,10 +94,12 @@ read past the end.
 
 ### Provider names ending in a digit
 
-DTrace does not allow one, so the macros reject it at compile time. A crate
-named like `http2` has a default provider that ends in a digit and sets
-`provider = "..."`. The macros do not rename it, since the provider name is
-part of the stable probe name.
+DTrace does not allow one. The macros reject a `provider = "..."` that ends
+in a digit, and add a `_` to a default taken from a crate name that does, so
+a crate named `http2` has the provider `http2_`. Its probe names then differ
+from the crate name by that `_`; setting `provider` picks another name. A
+crate name of 58 bytes that ends in a digit is one byte too long once the
+`_` is added and has to set `provider`.
 
 ## `#[probe]`
 
@@ -361,6 +364,14 @@ unregisters through `atexit`. In a DLL the C runtime runs `atexit` handlers at
 unload, which is what keeps ETW from calling into unmapped code. At exit, if
 another thread holds the provider lock, the handler gives up rather than
 wait, since that thread may never release it.
+
+If ETW refuses a registration (the per-process limit, or no memory), the probe
+that asked stays off for the life of the process, and the next probe naming
+that provider that has not been checked yet asks again. Nothing reports the
+refusal: `anyprobe::registration()` returns `Ok` on Windows, since nothing has
+registered when a program calls it at startup. Registering every provider at
+startup would let it report one, at the cost of registrations for providers
+whose probes never fire, each counted against the per-process limit.
 
 ### Per-process limits
 

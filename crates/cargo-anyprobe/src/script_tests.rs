@@ -88,6 +88,17 @@ fn dtrace____arguments____use_dtrace_names_and_copyinstr() {
 }
 
 #[test]
+fn dtrace____strsize____holds_the_longest_encoded_value_and_its_nul() {
+    let bytes = section(&[entry("get__entry", "get", &ARGS)]);
+    let out = dtrace(bin(), &groups(parse(&bytes), None, &Filter::default()));
+    let strsize = format!(
+        "#pragma D option strsize={}\n",
+        anyprobe::encode::MAX_LEN + 1
+    );
+    assert!(out.contains(&strsize), "{out}");
+}
+
+#[test]
 fn etw_guid____provider_name____matches_tracelogging() {
     // The GUID `Guid::from_name` documents for "MyProvider".
     assert_eq!(

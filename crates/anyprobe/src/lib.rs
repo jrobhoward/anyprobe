@@ -145,7 +145,14 @@ pub const BACKEND: &str = backend::NAME;
 /// and this returns why. The usual causes are DTrace not being loaded
 /// (`kldload dtraceall`) and a user who may not open the device, which is
 /// `root:wheel`, mode `0660`, by default. On every other target there is
-/// nothing to register and this returns `Ok`.
+/// nothing to register at startup and this returns `Ok`.
+///
+/// On Windows that includes ETW: a provider registers the first time one of
+/// its probes is checked, not at startup, so there is nothing to report yet
+/// when this is called. If ETW refuses a registration (the per-process limit
+/// on registrations, or no memory), the probe that asked stays off for the
+/// life of the process, and the next probe naming that provider that has not
+/// been checked yet asks again. Nothing reports the refusal.
 ///
 /// It reports on the executable or library it is compiled into, not on
 /// shared libraries loaded alongside it, which register on their own.
