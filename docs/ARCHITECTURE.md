@@ -1,8 +1,10 @@
 # Architecture
 
 How the workspace is laid out and why each backend works the way it does.
-Limitations are in [GAPS.md](GAPS.md); the pre-1.0 design history is in
-[PLAN.md](PLAN.md) until it is split into these two files.
+Limitations are in [GAPS.md](GAPS.md) and costs in
+[PERFORMANCE.md](PERFORMANCE.md), which also shows what each tracer does when
+it attaches; the pre-1.0 design history is in [PLAN.md](PLAN.md) until it is
+split into these files.
 
 ## Crates
 
@@ -19,6 +21,18 @@ requirement, so generated code always matches the runtime it calls.
 `__private` is outside the semver contract for the same reason.
 
 ## Macros
+
+```mermaid
+flowchart LR
+    A["#[probe] fn or probes! block"] --> M["anyprobe-macros: check the input,<br/>compute names, formats, field calls"]
+    M --> D["one define_probe! per probe"]
+    D --> L["linux.rs: SDT note,<br/>semaphore in .probes"]
+    D --> O["macos.rs: calls to<br/>__dtrace_probe$... symbols"]
+    D --> W["windows.rs: TraceLogging event,<br/>one provider per name"]
+    D --> N["noop.rs: nothing"]
+    O --> LD["ld64 rewrites the calls<br/>and builds the DOF section"]
+    D -->|"Linux, macOS, Windows"| R["registry record<br/>in its own section"]
+```
 
 `probes!` and `#[probe]` produce the same thing: a module per probe holding
 `enabled()` and `fire(..)`, defined by the backend's `macro_rules!`. The macro
@@ -95,6 +109,15 @@ A record holds no pointers, so `anyprobe::list()` in the running program and
 `cargo anyprobe` on a file read the same bytes, for any target, with no
 relocation processing. This is why the registry is not a `linkme` slice, whose
 elements hold pointers.
+
+```mermaid
+flowchart LR
+    R["one record per probe definition,<br/>no pointers"] --> S["registry section<br/>in the binary"]
+    S --> L["anyprobe::list()<br/>in the running program"]
+    S --> C["cargo anyprobe,<br/>from the file on disk"]
+    T["tracer metadata:<br/>SDT notes or DOF"] --> C
+    C --> O["list, bpftrace and D scripts,<br/>WPR profile"]
+```
 
 | Format | Section |
 |---|---|

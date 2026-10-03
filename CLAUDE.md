@@ -371,11 +371,14 @@ across them:
 | `docs/PLAN.md` | The pre-1.0 design, phases and open questions | Exempt from the writing-style rules. Split into `ARCHITECTURE.md` and `GAPS.md` once the design settles, then deleted |
 | `docs/ARCHITECTURE.md` | Module map and why each backend was chosen over its alternatives | Update when a design decision changes; not a development log |
 | `docs/GAPS.md` | Every known limitation, why it exists, and what changing it costs | One section per gap. Add to it rather than quietly narrowing scope |
+| `docs/PERFORMANCE.md` | The cost of a probe with and without a tracer, per platform, and how it was measured | Measured numbers with the machine they came from; say plainly what has not been measured |
+| `docs/ALTERNATIVES.md` | How anyprobe compares with other crates and with attaching by symbol | Facts about other projects, dated; no ranking |
+| `docs/usage/*.md` | One walkthrough per OS: run the `demo` example, attach the native tracer, expected output | Say whether the output was captured on that OS. Rerun after changing a probe's names, arguments or output format |
 | `CHANGELOG.md` | What changed in each release, and enough of why to act on it | Keep a Changelog format. One entry per released version |
 | `SECURITY.md` | How to report a vulnerability, and what is in scope | Reporting process and scope, not a list of known issues |
 | `CLAUDE.md` | Conventions and constraints a contributor needs before editing | Rules, not narrative |
 
-## Writing style for `README.md`, `docs/*.md` and rustdoc
+## Writing style for `README.md`, `docs/**/*.md` and rustdoc
 
 `docs/PLAN.md` is exempt while it exists.
 

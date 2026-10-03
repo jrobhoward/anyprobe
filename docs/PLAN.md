@@ -222,6 +222,9 @@ Superseded by "Phase 4" below.
    - Linux: privileged bpftrace
    - Windows: ETW session as admin
    - macOS: metadata presence only, since SIP is on in CI
+6. Documentation from real hosts: replace the Linux and Windows walkthrough
+   output and fill in the attached-cost numbers with captures from those
+   machines. Design and status below.
 
 ## Phase 1: runtime and `probes!`
 
@@ -902,6 +905,106 @@ Checked on Windows 11 x86_64 (MSVC, 2026-10-03):
   is independent of the registry and the CLI, and no one has asked for it.
 - Listing probes from shared libraries, and `--pid` to read a running
   process.
+
+## Phase 6: documentation from real hosts
+
+Decided 2026-10-03, after adding `docs/usage/{linux,macos,windows}.md`,
+`docs/PERFORMANCE.md`, `docs/ALTERNATIVES.md`, the new `docs/GAPS.md`
+sections and the `demo` and `overhead` examples. Only the macOS material was
+captured on its host. This phase brings Linux and Windows to the same
+standard: every output block in a walkthrough is pasted from a real session,
+and every cost in `PERFORMANCE.md` was measured on a named machine.
+
+### Where things stand (2026-10-03)
+
+- macOS: captured on an Apple M1, macOS 27, dtrace "Sun D 1.19", by
+  `spike/scripts/capture-docs-macos.sh` (prints everything, checks nothing).
+  `docs/usage/macos.md` uses that output; `PERFORMANCE.md` has the attached
+  cost (0.7 to 2.1 µs per firing; the spread follows the run-to-run
+  baseline, 1.2 to 3.1 ns, which fits P-core vs E-core scheduling).
+- Linux: `docs/usage/linux.md` commands follow `attach-linux-attr.sh`; the
+  output is written in the format that script checks and says it was not
+  captured. Unknowns in it: the `bpftrace -l` listing (not shown), the
+  "Attaching N probes..." line (described, not shown), whether perf reads
+  the encoded `order` argument as a string. `PERFORMANCE.md` cites the
+  kernel's uprobe benchmark (about 0.56 µs on a `nop`, commit
+  `d41bc48bfab2`, Linux 5.17) and says anyprobe has not measured a firing.
+- Windows: `docs/usage/windows.md` commands follow `attach-windows-attr.ps1`;
+  the XML excerpt shows only `Data` elements, since where tracerpt puts a
+  TraceLogging event's name was not checked. Attached cost: not measured.
+- Disabled cost for Linux and Windows in `PERFORMANCE.md` comes from the
+  spike's benchmark (`work_outlined` vs `baseline`, Threadripper 1950X), not
+  from `crates/anyprobe/benches/disabled_cost.rs`.
+- `docs/GAPS.md` states some behaviour nobody here has tested (below).
+
+### Steps
+
+1. Linux capture script, `spike/scripts/capture-docs-linux.sh`, ported from
+   the macOS one. Prints, checks nothing. Runs as the user, sudo for
+   bpftrace and perf only:
+   - versions: `uname -r`, `bpftrace --version`, `perf --version`, CPU
+     model (`lscpu`), distro;
+   - starts `demo` in the background; `bpftrace -l "usdt:$BIN:*"`;
+   - the walkthrough's one-liner under `-p` with `interval:s:3 { exit(); }`
+     added, so the output shows the "Attaching" line;
+   - `cargo anyprobe bpftrace` output and that script under `-p` for 3 s;
+   - perf: `perf probe -x $BIN -a '%sdt_demo:tick' -a
+     '%sdt_demo:checkout__entry' -a '%sdt_demo:checkout__return'`,
+     `perf record -p` for 3 s, `perf script`, `perf probe -d`;
+   - `overhead 1000000` with no tracer, five times;
+   - `overhead` under `bpftrace -c` with `@[probe] = count()`, five times,
+     and once with a `printf` of every argument (output discarded);
+   - `cargo bench -p anyprobe --bench disabled_cost`.
+   On x86_64, and on aarch64 if a machine is available (the walkthrough
+   says nobody has attached to an AArch64 build by hand).
+2. Windows capture script, `spike/scripts/capture-docs-windows.ps1`,
+   elevated Windows PowerShell 5.1 with `-ExecutionPolicy Bypass`:
+   - versions: Windows build, CPU model;
+   - starts `demo`; prints its `etw-guid`; `cargo anyprobe wprp` output;
+   - `wpr -start demo.wprp -filemode`, 5 s, `wpr -stop demo.etl`,
+     `tracerpt ... -of XML`; prints two whole `<Event>` elements (one
+     `checkout__entry`, one `tick`) so the doc can show where the event
+     name appears, then the field values of every event;
+   - the logman variant, and the file name logman actually writes;
+   - `overhead 1000000` with no session, five times, then five times with
+     the generated `overhead.wprp` session running; the event count from
+     the trace, to confirm every firing was recorded;
+   - `cargo bench -p anyprobe --bench disabled_cost`.
+3. Update the docs from the captures:
+   - `docs/usage/linux.md`, `docs/usage/windows.md`: paste real output;
+     replace "was not captured" with the OS, versions and date, as
+     `macos.md` does; fix any command that needed changing.
+   - `docs/PERFORMANCE.md`: attached cost per firing for Linux and Windows
+     with the machine; disabled-cost table from anyprobe's own benchmark
+     on all three hosts; drop "not measured" wording that no longer holds.
+   - `README.md` caveat: "about a microsecond on Linux and macOS" checked
+     against the Linux number.
+   - `CLAUDE.md`: list the three capture scripts under "Commands".
+4. Check the `docs/GAPS.md` claims that are stated without a test here,
+   then keep, reword or move each one:
+   - the kernel removes the breakpoints and lowers the semaphore when the
+     tracer is killed (`kill -9` bpftrace attached to `demo`, then check
+     the semaphore through `/proc/PID/mem` at the address `readelf -n`
+     gives, and that the `overhead` timings return to baseline); the same
+     for dtrace on macOS;
+   - a probe in a `cdylib` (`.so`, `.dylib`, `.dll`) loaded by a program
+     can be traced: a small scratch crate, one probe, each OS; on macOS
+     this also checks that dyld registers the library's DOF;
+   - Windows: an event over 64 KB is dropped (a `&str` of 70,000 bytes),
+     and a string field is cut at 65,535 bytes.
+5. macOS follow-ups: run `capture-docs-macos.sh` three times and report the
+   median and range per row; run the `cdylib` and kill checks from step 4.
+
+### Done when
+
+- Each walkthrough says which OS, tracer version and date its output came
+  from, and every output block in it was pasted from a session.
+- `PERFORMANCE.md` has a measured attached cost for Linux, macOS and
+  Windows, each with its machine, and the disabled cost from
+  `crates/anyprobe/benches/disabled_cost.rs` on each.
+- Every `GAPS.md` statement about runtime behaviour has been seen on a host
+  or says that it has not.
+- The capture scripts are in `spike/scripts/` and listed in `CLAUDE.md`.
 
 ## FreeBSD (deferred)
 

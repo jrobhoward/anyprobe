@@ -8,6 +8,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Documentation: walkthroughs that attach bpftrace, dtrace and ETW to the
+  new `demo` example (`docs/usage/`), the cost of a probe with and without
+  a tracer on each platform (`docs/PERFORMANCE.md`), and a comparison with
+  `usdt`, `probe`, `tracelogging` and `tracing` (`docs/ALTERNATIVES.md`).
+  `docs/GAPS.md` adds dynamic libraries, dependencies, panics, size limits
+  and what attaching changes in the program.
+- Examples `demo`, which runs until stopped and fires a few probes per
+  second, and `overhead`, which times probed calls with or without a tracer.
 - `anyprobe::list()` and the `registry` module: every probe in the binary,
   with its provider, name, arguments and their types, and the file and line
   that define it. The macros write each description into a section of the

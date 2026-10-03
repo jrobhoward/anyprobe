@@ -109,6 +109,12 @@ standard TraceLogging GUID derived from that name. PerfView accepts `*myapp`;
 `logman` and `tracelog` need the GUID. The provider registers with ETW the
 first time any of its probes is checked.
 
+The walkthroughs in [docs/usage](https://github.com/jrobhoward/anyprobe/tree/main/docs/usage)
+run the `demo` example in one terminal and a tracer in another, with the
+output to expect: [Linux](https://github.com/jrobhoward/anyprobe/blob/main/docs/usage/linux.md),
+[macOS](https://github.com/jrobhoward/anyprobe/blob/main/docs/usage/macos.md),
+[Windows](https://github.com/jrobhoward/anyprobe/blob/main/docs/usage/windows.md).
+
 Select probes by provider and probe name. DTrace also reports the containing
 function, but that is the mangled Rust symbol and changes between builds.
 
@@ -144,6 +150,15 @@ check against.
 
 ## Caveats
 
+- With no tracer attached a probe costs under half a nanosecond. While a
+  tracer records it, each firing costs about a microsecond on Linux and
+  macOS, where it traps into the kernel. Keep probes that fire very often out
+  of hot loops, or expect the program to slow while they are traced.
+  [PERFORMANCE.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/PERFORMANCE.md)
+  has the measurements.
+- A `debug` or `serde` argument runs its `Debug` or `Serialize` impl only
+  while a tracer is attached. A panic in that impl is not caught, so
+  attaching can surface a bug that never runs otherwise.
 - `#[probe]` runs the function's body in a closure, or an awaited `async`
   block for an `async fn`, to capture the return value. It does not support
   `const fn`, functions that return `!`, `#[track_caller]`, or functions
@@ -171,6 +186,21 @@ check against.
 
 The full list of limitations is in
 [docs/GAPS.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/GAPS.md).
+
+## Documentation
+
+- [Usage walkthroughs](https://github.com/jrobhoward/anyprobe/tree/main/docs/usage):
+  attaching bpftrace, dtrace and ETW to the `demo` example.
+- [PERFORMANCE.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/PERFORMANCE.md):
+  the cost of a probe with and without a tracer, per platform.
+- [GAPS.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/GAPS.md):
+  every known limitation, including dynamic libraries, panics and size
+  limits.
+- [ALTERNATIVES.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/ALTERNATIVES.md):
+  how anyprobe compares with `usdt`, `probe`, `tracelogging`, `tracing` and
+  attaching by symbol.
+- [ARCHITECTURE.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/ARCHITECTURE.md):
+  how the crates and backends fit together.
 
 ## License
 
