@@ -5,7 +5,7 @@ records it, and how each platform differs.
 
 | Target | No tracer attached, per probe | Tracer attached, per firing |
 |---|---|---|
-| Linux | one load and compare of the SDT semaphore: about 0.4 ns | one breakpoint trap into the kernel and the tracer's BPF program: about 0.5 µs in the kernel's own benchmark, not measured here |
+| Linux | one load and compare of the SDT semaphore: about 0.4 ns | one breakpoint trap into the kernel and the tracer's BPF program: 0.4 to 0.6 µs measured with bpftrace, about 1.2 µs with `perf record` |
 | macOS | one instruction that ld64 wrote to set the result to false: about 0.16 ns | two traps into the kernel and the D clause: 0.7 to 2.1 µs measured |
 | Windows | one load of an atomic flag: about 0.24 ns | no trap; the event is built in the process and written with one system call: 0.4 to 0.5 µs measured |
 | other targets | nothing; the check is the constant `false` | no tracer |
@@ -88,7 +88,29 @@ firing. Each firing is one trap. The kernel's uprobe benchmark (commit
 `d41bc48bfab2`, "selftests/bpf: Add uprobe triggering overhead benchmarks",
 Linux 5.17) measured about 0.56 µs for a uprobe on a `nop`, which is what an
 SDT site is, against 1.4 µs on another instruction. Later kernels have made
-uprobes faster. anyprobe has not measured a firing on Linux.
+uprobes faster.
+
+Measured with the `overhead` example on an AMD Threadripper 1950X, Ubuntu
+24.04 (Linux 6.8), `schedutil` governor, bpftrace 0.20.2 and perf 6.8.12,
+1,000,000 calls of each function, each call firing an entry and a return
+probe:
+
+| Tracer action on every probe | `native` | `encoded` |
+|---|---|---|
+| none attached | 2.6 ns per call | 2.0 ns per call |
+| bpftrace, `@[probe] = count()` | 890 ns per call | 1111 ns per call |
+| bpftrace, `printf` of every argument | 1153 ns per call | 1418 ns per call |
+| `perf record` to a file | 2348 ns per call | 2611 ns per call |
+
+That is 0.4 to 0.6 µs per firing under bpftrace, in line with the kernel's
+benchmark, with `encoded` about 0.1 µs higher for formatting its argument
+with `{:?}`. The counting run saw all 8,000,000 firings. The `printf` run
+lost 4,678,478 of them: bpftrace could not drain its ring buffer as fast as
+the example filled it, so that row is a lower bound on the cost of printing
+every firing. `perf record` costs about twice as much per firing, about
+1.2 µs. It wrote 769 MB and reported one lost chunk; `perf script` read
+8,000,262 samples against the 8,000,000 the example fires. Each figure is one
+run.
 
 ### macOS
 
@@ -197,6 +219,10 @@ sudo dtrace -q -c 'target/release/examples/overhead 1000000' \
 sudo bpftrace -c "$PWD/target/release/examples/overhead 1000000" \
   -e "usdt:$PWD/target/release/examples/overhead:overhead:* { @[probe] = count(); }"
 ```
+
+`spike/scripts/capture-docs-linux.sh` and `spike/scripts/capture-docs-macos.sh`
+run every measurement above for their platform, and
+`spike/scripts/capture-docs-windows.ps1` does the same on Windows.
 
 On Windows, start a session with the profile from
 `cargo anyprobe wprp target\release\examples\overhead.exe` before running the
