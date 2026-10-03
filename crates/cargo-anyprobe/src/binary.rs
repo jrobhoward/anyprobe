@@ -146,17 +146,29 @@ fn read_macho(macho: &MachO<'_>) -> Result<Read, String> {
             if segname == "__DATA" && sectname == "__anyprobe" {
                 registry = data.to_vec();
             } else if segname == "__TEXT" && sectname.starts_with("__dof_") {
-                let dof = dof::des::deserialize_section(data)
-                    .map_err(|e| format!("bad DOF in {sectname}: {e}"))?;
-                for provider in dof.providers.values() {
-                    for probe in provider.probes.values() {
-                        sites.insert(site_key(&provider.name, &probe.name));
-                    }
-                }
+                read_dof(data, &mut sites).map_err(|e| format!("bad DOF in {sectname}: {e}"))?;
             }
         }
     }
     Ok((registry, sites))
+}
+
+/// Adds the probes in one DOF section to `sites`. ld64 aligns a `__dof_*`
+/// section to one byte, but `dof` reads the DOF headers in place, which
+/// needs their 8-byte alignment. The bytes are copied to an address that has
+/// it, so the result does not depend on where the section sits in the file.
+fn read_dof(data: &[u8], sites: &mut HashSet<(String, String)>) -> Result<(), dof::Error> {
+    let mut buf = vec![0; data.len() + 7];
+    let start = buf.as_ptr().addr().wrapping_neg() % 8;
+    let aligned = &mut buf[start..start + data.len()];
+    aligned.copy_from_slice(data);
+    let dof = dof::des::deserialize_section(aligned)?;
+    for provider in dof.providers.values() {
+        for probe in provider.probes.values() {
+            sites.insert(site_key(&provider.name, &probe.name));
+        }
+    }
+    Ok(())
 }
 
 /// The `.aprobe` section. The file holds it padded to the file alignment

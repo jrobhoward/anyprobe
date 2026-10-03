@@ -726,8 +726,9 @@ type    = u8 u16 u32 u64 usize i8 i16 i32 i64 isize bool char ptr
   release and release-lto, including one in a module nothing calls and one
   in a generic function (2026-10-03, rust-lld). On COFF every record's
   object carries an `/INCLUDE:` directive for it (`llvm-readobj
-  --coff-directives`), which `/OPT:REF` honours. Mach-O (`no_dead_strip`)
-  is to be checked on the host.
+  --coff-directives`), which `/OPT:REF` honours. On Mach-O,
+  `no_dead_strip` keeps them through ld64 dead stripping in release and
+  release-lto (checked on the host, 2026-10-03).
 - Consequence: a probe whose code the linker dropped still has a record.
   `cargo anyprobe` cross-checks records against the tracer metadata (SDT
   notes on Linux, DOF on macOS) and marks probes with no site; scripts skip
@@ -852,11 +853,30 @@ return; `may_panic` 20 / 10 / 10; `exported` 20 and 20).
 `attach-linux.sh` passes for the spike and the `work` example, and
 `attach-linux-perf.sh` for the spike.
 
-Not yet:
+Checked on macOS 27 arm64 (Apple M1, rustc 1.99.0, 2026-10-03):
 
-- macOS: `list()` in a linked binary (`section$start`), the DOF
-  cross-check, and the generated D scripts under `sudo dtrace -c`
-  (`attach-macos-attr.sh`).
+- `list()` in a linked binary (`tests/registry.rs`, debug and release)
+  through `section$start` / `section$end`, and the CLI tests on the test
+  executable with the DOF cross-check (every probe has a site).
+- `cargo anyprobe list` on the release and release-lto `attr`,
+  `attr_async` and `same_name` examples: 8, 10 and 2 probes, each with a
+  site, and the warning for `new__entry`'s three layouts. The
+  `x86_64-apple-darwin` build passes the same checks without root.
+- `attach-macos-attr.sh`, release and release-lto: every check passes,
+  including the D scripts `cargo anyprobe dtrace` wrote, under
+  `sudo dtrace -c` for 20 iterations with exact counts (every encoding
+  decoded; 40 `fetch` entries and returns with non-zero invocation ids; 20
+  `slow` unwinds with `panicking=0` and no return; `may_panic` 20 / 10 /
+  10; `exported` 20 and 20). `attach-macos.sh` passes for the spike and
+  the `work` example.
+- Found on the host: `cargo anyprobe list` failed on the release `attr`
+  example with "bad DOF ... misaligned". The `dof` crate reads the DOF
+  headers in place with `zerocopy`, which needs 8-byte alignment, and ld64
+  aligns a `__dof_*` section to one byte; that section began at an odd
+  file offset. `attr_async` and the test executable happened to be
+  aligned. Fix: `read_dof` copies the section to an aligned buffer first;
+  a unit test places a serialized DOF section at an odd address, on every
+  host.
 
 Checked on Windows 11 x86_64 (MSVC, 2026-10-03):
 
