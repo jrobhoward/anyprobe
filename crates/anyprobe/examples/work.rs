@@ -75,6 +75,9 @@ fn main() {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "pid={}", std::process::id());
     let _ = writeln!(out, "backend={}", anyprobe::BACKEND);
+    if let Err(e) = anyprobe::registration() {
+        let _ = writeln!(out, "register-error={e}");
+    }
     #[cfg(windows)]
     {
         let guid = anyprobe::__private::etw::guid_string(work__entry::PROVIDER);

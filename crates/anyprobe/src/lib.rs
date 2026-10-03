@@ -9,6 +9,7 @@
 //! |---|---|---|
 //! | Linux (x86-64, AArch64) | SystemTap SDT notes with semaphores | bpftrace, perf |
 //! | macOS (x86-64, AArch64) | DTrace USDT, built by the linker | dtrace |
+//! | FreeBSD (x86-64) | DTrace USDT, registered at startup | dtrace |
 //! | Windows | ETW TraceLogging | WPR, PerfView, logman |
 //! | anything else | nothing; checks are `false` | none |
 //!
@@ -55,12 +56,16 @@
 //! reads the same description from a built binary and writes bpftrace, D
 //! and WPR scripts for it.
 //!
-//! Attaching on each platform, for the example above:
+//! Attaching on each platform, for the example above: bpftrace on Linux,
+//! dtrace on macOS and FreeBSD.
 //!
 //! ```text
 //! sudo bpftrace -p PID -e 'usdt:/path/to/bin:myapp:request__start { printf("%s\n", str(arg1, arg2)); }'
 //! sudo dtrace -p PID -n 'myapp$target:::request-start { printf("%s\n", copyinstr(arg1, arg2)); }'
 //! ```
+//!
+//! On FreeBSD the probes are registered with the kernel at startup;
+//! [`registration`] reports whether that worked.
 //!
 //! On Windows, start an ETW session for the provider `myapp` (PerfView
 //! `*myapp`, or `logman` with the provider's name-derived GUID).
@@ -78,7 +83,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub use anyprobe_macros::{probe, probes};
-pub use error::RegistryError;
+pub use error::{RegistrationError, RegistryError};
 pub use native::Native;
 pub use registry::list;
 
@@ -103,6 +108,10 @@ mod backend;
 #[path = "macos.rs"]
 mod backend;
 
+#[cfg(all(target_os = "freebsd", target_arch = "x86_64"))]
+#[path = "freebsd.rs"]
+mod backend;
+
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod backend;
@@ -112,14 +121,47 @@ mod backend;
         any(target_os = "linux", target_os = "macos"),
         any(target_arch = "x86_64", target_arch = "aarch64")
     ),
+    all(target_os = "freebsd", target_arch = "x86_64"),
     windows
 )))]
 #[path = "noop.rs"]
 mod backend;
 
+// The FreeBSD site table. Plain data processing, so its tests run on every
+// host.
+#[cfg(any(all(target_os = "freebsd", target_arch = "x86_64"), test))]
+mod sites;
+
 /// Name of the probe backend compiled for this target: `linux-sdt`,
-/// `macos-dtrace`, `windows-etw` or `noop`.
+/// `macos-dtrace`, `freebsd-dtrace`, `windows-etw` or `noop`.
 pub const BACKEND: &str = backend::NAME;
+
+/// Whether the probes of this executable or library are registered with the
+/// tracer.
+///
+/// Only FreeBSD registers probes at runtime: a constructor hands them to the
+/// kernel through `/dev/dtrace/helper` when the executable or library is
+/// loaded. If that fails, the probes stay off for the life of the process,
+/// and this returns why. The usual causes are DTrace not being loaded
+/// (`kldload dtraceall`) and a user who may not open the device, which is
+/// `root:wheel`, mode `0660`, by default. On every other target there is
+/// nothing to register and this returns `Ok`.
+///
+/// It reports on the executable or library it is compiled into, not on
+/// shared libraries loaded alongside it, which register on their own.
+///
+/// ```
+/// if let Err(e) = anyprobe::registration() {
+///     eprintln!("probes unavailable: {e}");
+/// }
+/// ```
+///
+/// # Errors
+///
+/// [`RegistrationError`] when registration failed.
+pub fn registration() -> Result<(), RegistrationError> {
+    backend::registration()
+}
 
 // Compiles README.md's examples as doctests, so they cannot drift from the API.
 #[cfg(doctest)]

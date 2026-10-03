@@ -4,19 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`anyprobe` adds USDT-style probes to Rust on Linux, macOS and Windows: stable
-probe names a tracer attaches to in a running process. SystemTap SDT notes on
-Linux (bpftrace, perf), DTrace USDT on macOS, ETW TraceLogging on Windows.
+`anyprobe` adds USDT-style probes to Rust on Linux, macOS, FreeBSD and
+Windows: stable probe names a tracer attaches to in a running process.
+SystemTap SDT notes on Linux (bpftrace, perf), DTrace USDT on macOS, DTrace
+USDT registered at startup on FreeBSD x86-64, ETW TraceLogging on Windows.
 With no tracer attached a probe costs one enabled check, and its arguments
-are not computed. Every other target compiles probes to nothing. FreeBSD is
-deferred indefinitely; it gets the no-op backend.
+are not computed. Every other target compiles probes to nothing.
 
 The crate is pre-1.0. `docs/PLAN.md` holds the design, the phases and the
 open questions; read it before changing anything structural. Phases 1 (the
 `probes!` macro and the runtime), 2 (the `#[probe]` attribute,
 `serde`/`debug` encoding and the `autoref` feature) and 3 (`async fn`,
-`unwind`, `symbol`) are in place; phase 4 adds the probe registry
-(`anyprobe::list()`) and the `cargo-anyprobe` tool.
+`unwind`, `symbol`) and 4 (the probe registry, `anyprobe::list()`, and the
+`cargo-anyprobe` tool) are in place. Phase 6 replaces the walkthrough output
+in `docs/usage/` and the costs in `docs/PERFORMANCE.md` with captures from
+real hosts. Phase 7 (the FreeBSD backend, `anyprobe::registration()`) is in
+place; its open items are listed in `docs/PLAN.md`.
 
 ## Commands
 
@@ -63,7 +66,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # without it the `*_tests.rs` files are not compiled, and a `cfg`-gated test
 # referring to something that has been renamed sails straight through. Needs
 # `rustup target add` for each target once.
-# FreeBSD stays in the loop: it must keep compiling to the no-op backend.
+# FreeBSD x86-64 has its own backend; the site table tests run on every host.
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
          x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
   cargo clippy --workspace --target $t --all-targets -- -Dwarnings || break
@@ -99,10 +102,12 @@ done
 # Attach checks, one per OS: build, attach the native tracer, and print
 # ok/FAIL per check. The CI jobs run the same scripts. They check the spike by
 # default; ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example,
-# which has the same probes. Linux and macOS ask for sudo; Windows needs an
-# elevated prompt. For the macOS scripts and attach-linux-attr.sh,
-# SPIKE_ATTACH=0 runs only the checks that need no root; on macOS,
-# SPIKE_TARGET=x86_64-apple-darwin checks an Intel build.
+# which has the same probes. Linux and macOS ask for sudo, FreeBSD for sudo
+# or doas; Windows needs an elevated prompt. For the macOS scripts,
+# attach-linux-attr.sh and attach-freebsd-attr.sh, SPIKE_ATTACH=0 runs only
+# the checks that need no root; on macOS, SPIKE_TARGET=x86_64-apple-darwin
+# checks an Intel build. The FreeBSD scripts are POSIX sh: FreeBSD has no
+# bash by default.
 spike/scripts/attach-linux.sh            # bpftrace
 spike/scripts/attach-linux-attr.sh       # bpftrace on `#[probe]`: encodings, async, unwind, symbol, cargo anyprobe
 spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
@@ -112,7 +117,8 @@ RUSTFLAGS="-C link-arg=-Wl,-z,separate-loadable-segments" \
   CARGO_TARGET_DIR=target/sep-seg spike/scripts/attach-linux-stap.sh
 spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
 spike/scripts/attach-macos-attr.sh       # `#[probe]`: encodings, same-name, async, unwind, symbol, cargo anyprobe
-sh spike/scripts/attach-freebsd.sh       # deferred: spike only, dtrace -p and -Z -c
+sh spike/scripts/attach-freebsd.sh       # dtrace -p, plus -Z -c as information
+sh spike/scripts/attach-freebsd-attr.sh  # `#[probe]`: encodings, same-name, async, unwind, symbol, cargo anyprobe
 # Windows: elevated Windows PowerShell. Execution policy blocks unsigned
 # scripts by default, so pass Bypass for this one invocation (`pwsh` is not
 # installed on most machines). Expect ok per check and a final PASS. Each
@@ -123,6 +129,19 @@ powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # lo
 $env:ATTACH_CRATE = 'anyprobe'
 powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # the `work` example
 powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows-attr.ps1   # `#[probe]`, every encoding, cargo anyprobe + wpr
+
+# Doc captures, one per OS: print (and check nothing) the output pasted into
+# docs/usage/<os>.md and the attached-cost numbers in docs/PERFORMANCE.md.
+# Rerun after changing a probe's names, arguments or output format. Run as
+# yourself; they call sudo (or need an elevated prompt) for the tracer only.
+spike/scripts/capture-docs-linux.sh      # demo + overhead under bpftrace and perf
+spike/scripts/capture-docs-macos.sh
+sh spike/scripts/capture-docs-freebsd.sh
+powershell -ExecutionPolicy Bypass -File spike\scripts\capture-docs-windows.ps1
+
+# Disabled-probe cost (criterion), as the CI `spike bench` job runs it
+cargo bench -p anyprobe --bench disabled_cost
+cargo bench -p anyprobe-spike --bench disabled_cost
 
 # Packaging, as the CI `package` job runs it. The verify step builds the
 # packaged crates as registry crates, and cargo assumes a registry crate of a
@@ -159,27 +178,32 @@ See `docs/PLAN.md` for the design. Summary a contributor needs day to day:
   rejections that depend on `anyprobe`'s features, in
   `crates/anyprobe/tests/ui/`.
 - `crates/anyprobe`: the facade and runtime. One `cfg`-selected backend module
-  per platform (`linux.rs`, `macos.rs`, `windows.rs`, `noop.rs`), each
-  defining the `macro_rules!` that `define_probe!` resolves to. All `asm!` and
-  `unsafe` live here, not in proc-macro output. `windows.rs` also holds the
-  ETW provider runtime, which shares one registration per provider name
-  across the process. `encode.rs` writes `serde`/`debug` values into a
+  per platform (`linux.rs`, `macos.rs`, `freebsd.rs`, `windows.rs`,
+  `noop.rs`), each defining the `macro_rules!` that `define_probe!` resolves
+  to. All `asm!` and `unsafe` live here, not in proc-macro output.
+  `windows.rs` also holds the ETW provider runtime, which shares one
+  registration per provider name across the process. `freebsd.rs` holds the
+  startup registration; `sites.rs` parses its site table and builds the DOF
+  (compiled on FreeBSD x86-64 and under `test` on every host). Each backend
+  provides `registration()`, which only FreeBSD can fail. `encode.rs` writes `serde`/`debug` values into a
   thread-local buffer; `native.rs` is the public `Native` trait.
   `registry.rs` holds the probe registry: the record format, the
   `register!` support the backends forward to (each backend picks the
-  section), the parser and `list()`; `error.rs` its error type. The
+  section), the parser and `list()`; `error.rs` its error type and
+  `RegistrationError`. The
   `serde`/`autoref` compile errors are `macro_rules!` in `lib.rs`, outside
   any backend, so they fire on every target.
 - `crates/cargo-anyprobe`: the `cargo anyprobe` binary. Reads the registry
-  section and the tracer metadata (SDT notes, DOF) from a built ELF, Mach-O
+  section and the tracer metadata (SDT notes, DOF, the FreeBSD site table)
+  from a built ELF, Mach-O
   or PE file with `goblin` and `dof`, and writes the `list` output and the
   bpftrace, D and WPR scripts. Its integration test reads its own test
   binary, which defines probes.
 - `crates/anyprobe-check` (unpublished): one probe per argument kind, so a
   library build reaches every backend's codegen.
 - `spike/` (`anyprobe-spike`, unpublished): the phase-0 hand-written probes,
-  the attach scripts, `examples/inspect_dof.rs`, and the deferred FreeBSD
-  prototype.
+  the attach and capture scripts, `examples/inspect_dof.rs`, and the FreeBSD
+  prototype the backend grew from.
 
 ## Platform constraints worth knowing before editing a backend
 
@@ -249,6 +273,16 @@ relocating. Each record is a `#[used]` static built by a `const fn` from a
 with it; `cargo-anyprobe` depends on `anyprobe` with an exact version for
 that reason.
 
+**FreeBSD site records hold pointers; registry records do not.** Each
+FreeBSD site writes its address into `anyprobe_sites`, which the dynamic
+linker relocates, so that table stays out of the registry section.
+`cargo anyprobe` reads only the names from it. The startup constructor never
+prints or panics, keeps the DOF buffer alive for the life of the object (the
+kernel rejects a registration whose buffer address it already holds), and
+reports failure only through `registration()`. A change to the site record
+layout changes `sites::RECORD_VERSION`, the `.byte 1` in `__anyprobe_site!`,
+and `cargo-anyprobe`'s reader with it.
+
 **Exported symbols use `#[unsafe(export_name = ...)]`.** Edition 2024 rejects
 the bare form in generated code. The `symbol` option refuses generic fns,
 trait-impl methods and async fns at compile time, since none has a single
@@ -287,8 +321,10 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
 
 - **build:** ubuntu, macos and windows matrix: build, test, clippy and doc
   per feature set.
-- **freebsd:** the spike in a FreeBSD VM, on manual dispatch only and never
-  failing the workflow (FreeBSD is deferred).
+- **freebsd:** a FreeBSD VM (root inside it): `cargo test`, then
+  `attach-freebsd.sh` for the spike and the `work` example and
+  `attach-freebsd-attr.sh`. It fails the workflow like the other attach
+  jobs.
 - **cross-check:** every target with `--all-targets`, plus `build --lib` per
   target for the `asm!` templates.
 - **probe attach:** each OS attaches with the native tool where the runner
@@ -310,6 +346,8 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
 - **semver:** `cargo-semver-checks`, skipped with a notice until a baseline
   exists on crates.io.
 - **fmt.**
+- **spike bench:** `cargo bench --bench disabled_cost` for the spike and
+  `anyprobe` on each OS, `continue-on-error` since shared runners are noisy.
 
 **A multi-line `run:` in the cross-OS matrix needs `shell: bash`.** The
 Windows default shell is PowerShell, which does not parse `if`, `[`, `&&` or
@@ -349,13 +387,14 @@ Before considering any change complete:
   (bpftrace, dtrace, an ETW session), or the fact that it was not is stated
   plainly. Run the attach scripts from "Commands" on each OS, once with the
   spike and once with `ATTACH_CRATE=anyprobe`: `attach-linux.sh` (sudo),
-  `attach-macos.sh` (sudo) and `attach-windows.ps1` (elevated prompt, with
-  `-ExecutionPolicy Bypass`). `#[probe]` has an attach script on Linux
-  (`attach-linux-attr.sh`), macOS (`attach-macos-attr.sh`, sudo) and
-  Windows (`attach-windows-attr.ps1`). All three scripts cover `async fn` and
-  `unwind` (the `attr_async` example); macOS (`pid` provider) and Linux
-  (uprobe) cover `symbol` by name, since Windows has no tracer that attaches
-  by symbol. Run
+  `attach-macos.sh` (sudo), `attach-freebsd.sh` (sudo or doas) and
+  `attach-windows.ps1` (elevated prompt, with `-ExecutionPolicy Bypass`).
+  `#[probe]` has an attach script on Linux (`attach-linux-attr.sh`), macOS
+  (`attach-macos-attr.sh`, sudo), FreeBSD (`attach-freebsd-attr.sh`) and
+  Windows (`attach-windows-attr.ps1`). All four scripts cover `async fn` and
+  `unwind` (the `attr_async` example); macOS and FreeBSD (`pid` provider) and
+  Linux (uprobe) cover `symbol` by name, since Windows has no tracer that
+  attaches by symbol. Run
   the macOS scripts as yourself, not under `sudo`: they call `sudo` for dtrace only, and cargo run as root
   leaves root-owned files in `target/`
 - `cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe -p cargo-anyprobe` passes

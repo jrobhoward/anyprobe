@@ -7,6 +7,7 @@ records it, and how each platform differs.
 |---|---|---|
 | Linux | one load and compare of the SDT semaphore: about 0.4 ns | one breakpoint trap into the kernel and the tracer's BPF program: 0.4 to 0.6 µs measured with bpftrace, about 1.2 µs with `perf record` |
 | macOS | one instruction that ld64 wrote to set the result to false: about 0.16 ns | two traps into the kernel and the D clause: 0.7 to 2.1 µs measured |
+| FreeBSD (x86-64) | one `xor eax, eax`: about 0.37 ns | two traps into the kernel and the D clause: 1.0 to 1.3 µs measured, in a virtual machine |
 | Windows | one load of an atomic flag: about 0.24 ns | no trap; the event is built in the process and written with one system call: 0.4 to 0.5 µs measured |
 | other targets | nothing; the check is the constant `false` | no tracer |
 
@@ -23,6 +24,9 @@ The check on each platform:
 - **macOS:** ld64 rewrites each is-enabled call to an instruction that sets
   the result to zero (`mov x0, #0` on AArch64, `xor eax, eax` on x86-64),
   and each probe call to a `nop`.
+- **FreeBSD:** the site is `xor eax, eax`, which sets the result to zero,
+  and each probe site a `nop`. The binary's constructor registers both with
+  the kernel at startup, once per executable or library.
 - **Windows:** a relaxed load of an `AtomicU8` that the ETW enable callback
   sets. The first check of a provider in the process registers it with ETW,
   once.
@@ -37,6 +41,7 @@ the same function without them, as in `crates/anyprobe/benches/disabled_cost.rs`
 | Apple M1, macOS | 0.95 ns | 1.27 ns | 0.16 ns |
 | AMD Threadripper 1950X, Linux x86-64 | 1.63 ns | 2.40 ns | 0.39 ns |
 | Same machine, Windows x86-64 | 1.91 ns | 2.40 ns | 0.24 ns |
+| Same machine, FreeBSD 15.0 x86-64 in a KVM virtual machine | 1.65 ns | 2.39 ns | 0.37 ns |
 
 - Most of the difference is the register saves the cold calls need, not the
   checks. On Linux x86-64 a function with one check measured the same as one
@@ -52,8 +57,11 @@ the same function without them, as in `crates/anyprobe/benches/disabled_cost.rs`
   Threadripper.
 - `unwind` adds a guard flag. An `async fn` draws an invocation id only when
   its entry probe is enabled.
-- Size: each probe adds its cold helper, its tracer metadata (an SDT note or
-  a DOF entry per site) and a registry record of about 150 bytes.
+- Size: each probe adds its cold helper, its tracer metadata (an SDT note, a
+  DOF entry or a FreeBSD site record per site) and a registry record of
+  about 150 bytes.
+- On FreeBSD, startup also builds and registers the DOF, once per executable
+  or library that links anyprobe. Nobody has timed it.
 
 Run the benchmark with `cargo bench -p anyprobe --bench disabled_cost`.
 Differences below a nanosecond are within the noise of a laptop on battery or
@@ -62,9 +70,9 @@ under load; the instruction count is the steadier comparison.
 ## With a tracer attached
 
 While a tracer records a probe, each firing runs the cold helper, which
-encodes the arguments, and then hands control to the tracer. On Linux and
-macOS that is a trap into the kernel. On Windows the program writes the event
-itself.
+encodes the arguments, and then hands control to the tracer. On Linux, macOS
+and FreeBSD that is a trap into the kernel. On Windows the program writes the
+event itself.
 
 ### Linux
 
@@ -147,6 +155,44 @@ in others, so these runs give the order of magnitude, not a precise figure.
 Formatting the small struct in `encoded` with `{:?}` added about 0.3 µs per
 call in the counting run.
 
+### FreeBSD
+
+```mermaid
+sequenceDiagram
+    participant T as dtrace
+    participant K as Kernel
+    participant P as Program
+    P->>K: at startup, register the sites (DOF through /dev/dtrace/helper)
+    T->>K: enable the probes
+    K->>P: replace each is-enabled site and probe site with a trap
+    P->>K: trap at the is-enabled site
+    K-->>P: result: enabled
+    P->>P: cold helper encodes the arguments
+    P->>K: trap at the probe site
+    K->>K: run the D clause, copy the arguments
+    K-->>P: resume after the site
+    K-->>T: dtrace reads the buffer
+```
+
+As on macOS, each firing is two traps. Measured with the `overhead` example
+on FreeBSD 15.0-RELEASE in a KVM virtual machine on the AMD Threadripper
+1950X above, DTrace `Sun D 1.13`, 1,000,000 calls of each function, each
+call firing an entry and a return probe:
+
+| dtrace action on every probe | `native` | `encoded` |
+|---|---|---|
+| none attached | 4.0 ns per call | 3.7 ns per call |
+| `@[probename] = count()` | 2292 ns per call | 2506 ns per call |
+| `printf` of every argument | 1940 ns per call | 2178 ns per call |
+
+That is 1.0 to 1.3 µs per firing, with `encoded` about 0.1 µs higher for
+formatting its argument with `{:?}`. The counting run saw all 8,000,000
+firings. In the `printf` run dtrace reported about 3.2 million drops, so it
+spent less time per firing than the counting run and that row is a lower
+bound. A trap costs more in a virtual machine than on the same hardware
+directly, so these figures are likely higher than on a FreeBSD host; nobody
+has measured one. Each figure is one run.
+
 ### Windows
 
 ```mermaid
@@ -187,7 +233,7 @@ the buffer size matters for a program that fires this fast. Each figure is one
 run.
 
 A session enables a whole provider, so every probe in it turns on together.
-On Linux and macOS a tracer turns on only the probes it names.
+On Linux, macOS and FreeBSD a tracer turns on only the probes it names.
 
 ## Planning for the attached cost
 
@@ -215,13 +261,18 @@ cargo build --release -p anyprobe --example overhead
 sudo dtrace -q -c 'target/release/examples/overhead 1000000' \
   -n 'overhead$target:::* { @[probename] = count(); }'
 
+# FreeBSD
+doas dtrace -q -c 'target/release/examples/overhead 1000000' \
+  -n 'overhead$target:::* { @[probename] = count(); }'
+
 # Linux
 sudo bpftrace -c "$PWD/target/release/examples/overhead 1000000" \
   -e "usdt:$PWD/target/release/examples/overhead:overhead:* { @[probe] = count(); }"
 ```
 
-`spike/scripts/capture-docs-linux.sh` and `spike/scripts/capture-docs-macos.sh`
-run every measurement above for their platform, and
+`spike/scripts/capture-docs-linux.sh`, `spike/scripts/capture-docs-macos.sh`
+and `spike/scripts/capture-docs-freebsd.sh` run every measurement above for
+their platform, and
 `spike/scripts/capture-docs-windows.ps1` does the same on Windows.
 
 On Windows, start a session with the profile from

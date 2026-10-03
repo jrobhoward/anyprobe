@@ -26,13 +26,14 @@ cd "$(dirname "$0")/../.." || exit 2
 
 # ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example, which has
 # the spike's provider, probes and command line; the default checks the spike.
-# (The anyprobe crate has no FreeBSD backend yet, so expect it to fail there.)
 if [ "${ATTACH_CRATE:-spike}" = anyprobe ]; then
   pkg_args="-p anyprobe --example work"
   bin_rel=examples/work
+  checked="anyprobe example work"
 else
   pkg_args="-p anyprobe-spike"
   bin_rel=anyprobe-spike
+  checked="anyprobe-spike"
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -69,7 +70,7 @@ spread() { sort -n | awk 'NR == 1 { min = $1 } { max = $1 } END { print max - mi
 count() { awk -v k="$1" '$1 == k { print $2 }' "$2"; }
 
 for profile in "$@"; do
-  echo "== $profile"
+  echo "== $profile ($checked)"
   profile_failed=0
   if ! cargo build -q $pkg_args --profile "$profile"; then
     echo "  FAIL  build"
@@ -91,7 +92,7 @@ for profile in "$@"; do
   kill "$pid" 2>/dev/null
   wait "$pid" 2>/dev/null
 
-  expect "spike registered its probes" sh -c "! grep -q register-error '$log'"
+  expect "probes registered" sh -c "! grep -q register-error '$log'"
   expect "attach turned the probe on in the process" grep -q 'entry-enabled=true' "$log"
   expect "detach turned it off again" grep -q 'entry-enabled=false' "$log"
   entries=""

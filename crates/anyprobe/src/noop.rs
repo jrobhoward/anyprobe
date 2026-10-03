@@ -1,7 +1,13 @@
-//! Targets with no supported tracer, FreeBSD included: probes compile to
+//! Targets with no supported tracer: probes compile to
 //! nothing, `enabled()` is `false` and `fire` does nothing.
 
 pub(crate) const NAME: &str = "noop";
+
+/// Nothing registers at runtime on this target.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn registration() -> Result<(), crate::RegistrationError> {
+    Ok(())
+}
 
 /// Registry records: none on this target. Called by `probes!`.
 #[doc(hidden)]

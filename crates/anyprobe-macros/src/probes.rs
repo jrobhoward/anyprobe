@@ -322,16 +322,7 @@ pub(crate) fn define_named_probe(provider: &str, name_str: &str, probe: &Probe) 
         quote!(#id = (#op))
     });
 
-    let [probe_sym, enabled_sym, stability_sym, typedefs_sym] =
-        dtrace_symbols(provider, name_str, &c_types);
-    let aarch64 = operands
-        .iter()
-        .zip(AARCH64_REGS)
-        .map(|(op, reg)| quote!(#reg = (#op)));
-    let x86_64 = operands
-        .iter()
-        .zip(X86_64_REGS)
-        .map(|(op, reg)| quote!(#reg = (#op)));
+    let dtrace = dtrace_block(provider, name_str, &probe.function, &operands, &c_types);
 
     let etw = args.iter().map(|a| {
         let (method, value, out) = a.kind.etw_field(&a.name);
@@ -355,18 +346,48 @@ pub(crate) fn define_named_probe(provider: &str, name_str: &str, probe: &Probe) 
                 name: #name_str,
                 params: [#(#params),*],
                 sdt: #sdt, [#(#sdt_ops),*],
-                dtrace: {
-                    probe: #probe_sym,
-                    is_enabled: #enabled_sym,
-                    stability: #stability_sym,
-                    typedefs: #typedefs_sym,
-                    aarch64: [#(#aarch64),*],
-                    x86_64: [#(#x86_64),*],
-                },
+                dtrace: #dtrace,
                 etw: [#(#etw),*],
             }
 
             #registry
+        }
+    }
+}
+
+/// The `dtrace` block of `define_probe!`: the macOS symbol names, the
+/// FreeBSD site record's strings (the probe name as DTrace spells it, the
+/// function, empty for `probes!`, and the C types), and the argument
+/// registers for both architectures.
+fn dtrace_block(
+    provider: &str,
+    name_str: &str,
+    function: &str,
+    operands: &[TokenStream],
+    c_types: &[&str],
+) -> TokenStream {
+    let [probe_sym, enabled_sym, stability_sym, typedefs_sym] =
+        dtrace_symbols(provider, name_str, c_types);
+    let dtrace_name = name_str.replace("__", "-");
+    let aarch64 = operands
+        .iter()
+        .zip(AARCH64_REGS)
+        .map(|(op, reg)| quote!(#reg = (#op)));
+    let x86_64 = operands
+        .iter()
+        .zip(X86_64_REGS)
+        .map(|(op, reg)| quote!(#reg = (#op)));
+    quote! {
+        {
+            probe: #probe_sym,
+            is_enabled: #enabled_sym,
+            stability: #stability_sym,
+            typedefs: #typedefs_sym,
+            dtrace_name: #dtrace_name,
+            function: #function,
+            c_types: [#(#c_types),*],
+            aarch64: [#(#aarch64),*],
+            x86_64: [#(#x86_64),*],
         }
     }
 }

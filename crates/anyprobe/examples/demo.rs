@@ -40,6 +40,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1000);
     println!("pid={} backend={}", std::process::id(), anyprobe::BACKEND);
+    // Only FreeBSD registers probes at runtime, and only it can fail here.
+    if let Err(e) = anyprobe::registration() {
+        println!("probes unavailable: {e}");
+    }
     // The GUID an ETW session enables; `cargo anyprobe wprp` writes it too.
     #[cfg(windows)]
     println!("etw-guid={}", anyprobe::__private::etw::guid_string("demo"));

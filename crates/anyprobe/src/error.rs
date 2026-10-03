@@ -42,3 +42,37 @@ pub enum RegistryError {
         what: &'static str,
     },
 }
+
+/// Why the probes of this executable or library are not registered with the
+/// tracer. See [`registration`](crate::registration).
+///
+/// Only FreeBSD registers probes at runtime, so only FreeBSD returns these.
+/// The probes stay compiled in and their checks stay `false`; nothing else in
+/// the program changes.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RegistrationError {
+    /// The tracer's device could not be opened. `ENOENT` means DTrace is not
+    /// loaded (`kldload dtraceall`); `EACCES` that the process may not use it.
+    #[error("cannot open {path}: {}", std::io::Error::from_raw_os_error(*code))]
+    Open {
+        /// The device.
+        path: &'static str,
+        /// The `errno` value.
+        code: i32,
+    },
+    /// The kernel refused the probe description.
+    #[error("the kernel refused the probes: {}", std::io::Error::from_raw_os_error(*code))]
+    Refused {
+        /// The `errno` value.
+        code: i32,
+    },
+    /// The table of probe sites in the binary could not be read.
+    #[error("probe site table at byte {offset} is malformed: {what}")]
+    SiteTable {
+        /// Where the bad record starts.
+        offset: usize,
+        /// What is wrong with it.
+        what: &'static str,
+    },
+}

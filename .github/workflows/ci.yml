@@ -283,19 +283,17 @@ jobs:
         if: matrix.crate == 'anyprobe'
         run: ./spike/scripts/attach-windows-attr.ps1 -Profiles ${{ matrix.profile }}
 
-  # FreeBSD is deferred (docs/PLAN.md), so this runs only when started by
-  # hand, and never fails the workflow. Root in the VM, so dtrace runs for
-  # real: it reports whether the spike's runtime DOF registration works.
-  spike-freebsd:
-    name: spike attach / freebsd (deferred, manual)
-    if: github.event_name == 'workflow_dispatch'
-    continue-on-error: true
+  # FreeBSD in a VM, as root, so dtrace runs for real: the workspace tests,
+  # then the attach scripts for the spike, the anyprobe `work` example and
+  # `#[probe]`. The scripts are POSIX sh, since FreeBSD has no bash.
+  freebsd:
+    name: freebsd (test + dtrace attach)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: vmactions/freebsd-vm@v1
         with:
-          release: "14.3"
+          release: "15.0"
           usesh: true
           prepare: |
             pkg install -y curl
@@ -303,8 +301,10 @@ jobs:
           run: |
             set -eu
             . "$HOME/.cargo/env"
-            cargo test -p anyprobe-spike
+            cargo test --workspace --locked
             sh spike/scripts/attach-freebsd.sh
+            ATTACH_CRATE=anyprobe sh spike/scripts/attach-freebsd.sh
+            sh spike/scripts/attach-freebsd-attr.sh
 
   # Informational: the disabled cost on each runner. Shared runners are noisy,
   # so this reports and never fails the build.

@@ -9,7 +9,8 @@ documentation as of October 2026; check each project for changes.
 | Linux | SDT notes with semaphores | SDT notes with semaphores | SDT notes, Android too | no (`eventheader` covers Linux `user_events`) | in-process |
 | macOS | DTrace USDT, built by the linker | DTrace USDT, built by the linker | no | no | in-process |
 | Windows | ETW TraceLogging | no | no | ETW TraceLogging | in-process |
-| illumos, FreeBSD | no | DTrace USDT, registered at startup | no | no | in-process |
+| FreeBSD | DTrace USDT, registered at startup (x86-64) | DTrace USDT, registered at startup | no | no | in-process |
+| illumos | no | DTrace USDT, registered at startup | no | no | in-process |
 | Who reads the events | a tracer outside the process | a tracer outside the process | a tracer outside the process | an ETW session | a subscriber inside the process |
 | Probes on a function's entry and return | `#[probe]` | no | no | no | `#[instrument]` spans |
 | Arguments | integers, `bool`, `char`, pointers, `&str`, `&[u8]`; `serde` or `Debug` encoding | integers, pointers, strings; `Serialize` as JSON | integers, cast to `isize` | typed fields | typed fields and `Debug` |
@@ -26,7 +27,9 @@ takes a closure, which runs only when the probe is enabled.
 
 - It covers illumos and FreeBSD, where it builds DOF itself and registers it
   when the program calls `usdt::register_probes()`. anyprobe compiles to
-  nothing on both.
+  nothing on illumos. On FreeBSD x86-64 it also builds DOF (with the `dof`
+  crate from the `usdt` project) and registers it from a constructor, with no
+  call in the program; `anyprobe::registration()` reports the result.
 - On macOS it runs the system's `dtrace -h` while the macro expands, so
   building needs `dtrace` on the host. anyprobe writes the linker symbols
   itself and builds without it, which also allows cross-compiling to macOS.
@@ -39,8 +42,8 @@ takes a closure, which runs only when the probe is enabled.
   where a `&str` or an encoded argument counts as two, and collapses a
   longer argument list into one JSON object.
 
-A program that needs illumos or FreeBSD today, or already has D provider
-files, fits `usdt`. One that needs Windows, or entry and return probes on many
+A program that needs illumos, or FreeBSD on another architecture than
+x86-64, or already has D provider files, fits `usdt`. One that needs Windows, or entry and return probes on many
 functions, fits anyprobe.
 
 ## `probe`

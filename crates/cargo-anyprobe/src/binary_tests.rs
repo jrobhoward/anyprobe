@@ -53,3 +53,43 @@ fn read_dof____section_at_an_odd_address____lists_its_probes() {
     read_dof(&file[start..start + dof.len()], &mut sites).unwrap();
     assert_eq!(sites, HashSet::from([site_key("attr", "lookup-entry")]));
 }
+
+/// A FreeBSD site record, little-endian, padded to 8 bytes.
+fn site_record(strings: &[&str]) -> Vec<u8> {
+    let mut rec = vec![0, 0, 0, 0, 1, 0, 0, 0];
+    rec.extend_from_slice(&0x1000u64.to_le_bytes());
+    for s in strings {
+        rec.extend_from_slice(s.as_bytes());
+        rec.push(0);
+    }
+    while !rec.len().is_multiple_of(8) {
+        rec.push(0);
+    }
+    let len = rec.len() as u32;
+    rec[..4].copy_from_slice(&len.to_le_bytes());
+    rec
+}
+
+#[test]
+fn read_site_table____records_and_padding____lists_each_probe() {
+    let mut table = vec![0; 8];
+    table.extend(site_record(&["attr", "lookup-entry", "lookup", "uint64_t"]));
+    table.extend(site_record(&["attr", "lookup-return", ""]));
+    let mut sites = HashSet::new();
+    read_site_table(&table, true, &mut sites).unwrap();
+    assert_eq!(
+        sites,
+        HashSet::from([
+            site_key("attr", "lookup-entry"),
+            site_key("attr", "lookup-return")
+        ])
+    );
+}
+
+#[test]
+fn read_site_table____length_past_end____is_an_error() {
+    let mut table = site_record(&["attr", "lookup-entry", "lookup"]);
+    table.truncate(table.len() - 8);
+    let err = read_site_table(&table, true, &mut HashSet::new()).unwrap_err();
+    assert!(err.contains("byte 0"), "{err}");
+}

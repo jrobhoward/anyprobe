@@ -16,6 +16,14 @@
 
 pub(crate) const NAME: &str = "windows-etw";
 
+/// Providers register lazily, on a probe's first enabled check, and a
+/// refused registration is retried by the next probe; it is not reported
+/// here.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn registration() -> Result<(), crate::RegistrationError> {
+    Ok(())
+}
+
 /// Emits a probe's registry record. Called by `probes!`. The linker sorts
 /// grouped sections by the text after `$`, so records land between the
 /// markers in `.aprobe$a` and `.aprobe$c`, and the image has one `.aprobe`

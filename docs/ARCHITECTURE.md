@@ -14,7 +14,7 @@ split into these files.
 | `anyprobe` | The facade and runtime. One backend module per platform, the encoder, the registry and the public `Native` trait. All `asm!` and `unsafe` live here. |
 | `cargo-anyprobe` | The `cargo anyprobe` binary. Reads the registry and the tracer metadata from a built file and writes scripts. |
 | `anyprobe-check` | Unpublished. One probe per argument kind, so a library build reaches every backend's code generation. |
-| `anyprobe-spike` | Unpublished. Hand-written probes, the attach scripts and the FreeBSD prototype. |
+| `anyprobe-spike` | Unpublished. Hand-written probes, the attach and capture scripts, and the first FreeBSD prototype. |
 
 The macros and the runtime are released together with an exact version
 requirement, so generated code always matches the runtime it calls.
@@ -28,10 +28,12 @@ flowchart LR
     M --> D["one define_probe! per probe"]
     D --> L["linux.rs: SDT note,<br/>semaphore in .probes"]
     D --> O["macos.rs: calls to<br/>__dtrace_probe$... symbols"]
+    D --> F["freebsd.rs: nop and xor sites,<br/>a record per site"]
     D --> W["windows.rs: TraceLogging event,<br/>one provider per name"]
     D --> N["noop.rs: nothing"]
     O --> LD["ld64 rewrites the calls<br/>and builds the DOF section"]
-    D -->|"Linux, macOS, Windows"| R["registry record<br/>in its own section"]
+    F --> RT["a constructor builds DOF<br/>and registers it at startup"]
+    D -->|"Linux, macOS, FreeBSD, Windows"| R["registry record<br/>in its own section"]
 ```
 
 `probes!` and `#[probe]` produce the same thing: a module per probe holding
@@ -51,6 +53,7 @@ absolute paths, `__anyprobe_`-prefixed names and the `allow`s it needs.
 |---|---|---|---|
 | Linux | SystemTap SDT v3 note from `asm!` | the SDT semaphore, in `.probes` | none |
 | macOS | DTrace USDT, as linker relocations the linker turns into DOF | DTrace's is-enabled probe | none |
+| FreeBSD (x86-64) | DTrace USDT: a `nop` plus a site record, turned into DOF at startup | DTrace's is-enabled probe, an `xor eax, eax` site | an `.init_array` constructor per executable or library; `.fini_array` unregisters |
 | Windows | ETW TraceLogging event, one per probe | an atomic flag the provider's enable callback sets | on the first enabled check, `atexit` unregisters |
 | other | nothing | `false` | none |
 
@@ -75,6 +78,41 @@ section, so the runtime registers nothing. A probe site must be an `asm!`
 call and not a Rust call: a Rust call that ends a function compiles to a tail
 call, and the rewritten site would fall through into the next function.
 
+### FreeBSD
+
+FreeBSD's own toolchain runs `dtrace -G` over object files to rewrite probe
+calls and link in DOF, plus `drti.o`, whose constructor registers the DOF.
+That needs a step between compiling and linking, which Cargo does not have.
+Instead each site is emitted in its final form: a probe site is a `nop` with
+the arguments in the System V argument registers, an is-enabled site is
+`xor eax, eax`, which `fasttrap` emulates as setting `eax` to 1 while the
+probe is enabled. Next to each, `asm!` writes a record into `anyprobe_sites`
+with the site's address, the provider, the probe name as DTrace spells it,
+the function and the C type of each argument. At startup a constructor in
+`.init_array` reads the section between its `__start_` and `__stop_`
+symbols, builds DOF with the `dof` crate and registers it with the
+`DTRACEHIOC_ADDDOF` ioctl on `/dev/dtrace/helper`, as `drti.o` does. A
+`.fini_array` destructor unregisters it, so a library unloaded with
+`dlclose` leaves no tracepoints behind.
+
+- Each executable or library registers its own sites: the section bounds,
+  the constructor and the registration state are per object.
+- The DOF buffer lives as long as the object. The kernel tells registrations
+  apart by the buffer's address, so a freed and reused buffer would make the
+  next library's registration fail.
+- A site record holds the site's address, which the dynamic linker
+  relocates, so the records cannot share the registry section, whose records
+  hold no pointers.
+- Two functions that define one probe name get one DOF probe each, keyed by
+  function and argument types, as ld64 does on macOS.
+- Registration can fail (DTrace not loaded, no access to the device). The
+  constructor never prints or panics; `anyprobe::registration()` reports the
+  result.
+
+The macros pass the same `dtrace` block to every backend; FreeBSD reads the
+DTrace probe name, the function, the C types and the x86-64 registers from
+it.
+
 ### Windows
 
 The provider is `tracelogging_dynamic`, so each probe is an event whose
@@ -87,7 +125,8 @@ provider's current state under the same lock, so no change is lost.
 ### Other targets
 
 Probes compile to nothing, and the enabled check is the constant `false`, so
-arguments are never computed. FreeBSD is in this group.
+arguments are never computed. FreeBSD on architectures other than x86-64 is
+in this group.
 
 ## Argument encoding
 
@@ -115,13 +154,13 @@ flowchart LR
     R["one record per probe definition,<br/>no pointers"] --> S["registry section<br/>in the binary"]
     S --> L["anyprobe::list()<br/>in the running program"]
     S --> C["cargo anyprobe,<br/>from the file on disk"]
-    T["tracer metadata:<br/>SDT notes or DOF"] --> C
+    T["tracer metadata:<br/>SDT notes, DOF or FreeBSD site records"] --> C
     C --> O["list, bpftrace and D scripts,<br/>WPR profile"]
 ```
 
 | Format | Section |
 |---|---|
-| ELF | `anyprobe_probes`, a C identifier, so `__start_` and `__stop_` bound it |
+| ELF (Linux, FreeBSD) | `anyprobe_probes`, a C identifier, so `__start_` and `__stop_` bound it |
 | Mach-O | `__DATA,__anyprobe` with `no_dead_strip`, bounded by `section$start` and `section$end` |
 | PE | `.aprobe$b` between `.aprobe$a` and `.aprobe$c` markers |
 
@@ -134,8 +173,9 @@ with it.
 
 It reads a built file with `goblin` (ELF, Mach-O including fat files, PE) and
 `dof` (DOF sections), and never runs the file. Where the file carries tracer
-metadata (SDT notes, DOF), `list` compares it with the registry to mark a probe
-whose code the linker removed. `--bin` and `--example` run `cargo build` and
+metadata (SDT notes, DOF, a FreeBSD site table), `list` compares it with the
+registry to mark a probe whose code the linker removed. From a FreeBSD site
+table it reads only the provider and probe names, which need no relocation. `--bin` and `--example` run `cargo build` and
 take the executable from its JSON messages.
 
 ## Verification

@@ -21,9 +21,14 @@ them) but nobody has run a tracer against either. The Linux SDT code uses the
 
 ### FreeBSD
 
-FreeBSD compiles to the no-op backend. The DOF prototype in `spike/` registers
-probes through `/dev/dtrace/helper` and has never run on FreeBSD. Cost: a
-FreeBSD machine, and answers to the open questions in `docs/PLAN.md`.
+FreeBSD has a backend on x86-64 only. FreeBSD on AArch64 and other
+architectures compiles to the no-op backend: nobody has checked whether
+`fasttrap` supports USDT there. Cost: an AArch64 FreeBSD machine, and AArch64
+versions of the two site instructions.
+
+The FreeBSD measurements come from FreeBSD 15.0 in a KVM virtual machine.
+Nobody has run the backend on FreeBSD hardware or on another release. The
+CI job runs in a virtual machine too.
 
 ### Hardened and protected processes
 
@@ -64,8 +69,9 @@ load in the cold path only.
 ### Large native strings and byte slices
 
 A native `&str` or `&[u8]` is passed as a pointer and a length, with no copy
-and no limit. On Linux and macOS the tracer copies what it reads, up to its
-own string limit, so a large value costs the program nothing extra. On
+and no limit. On Linux, macOS and FreeBSD the tracer copies what it reads,
+up to its own string limit, so a large value costs the program nothing
+extra. On
 Windows the value is copied into the event: TraceLogging cuts a string or
 byte field at 65535 bytes, and ETW drops any event larger than 64 KB, or
 larger than the session's buffer size, without telling the program. A
@@ -119,11 +125,13 @@ and it is why a probed function can still be inlined. Costs:
   longer, and over a window of a few milliseconds the sites go live at
   slightly different moments. Counts compared across sites over a short
   window can disagree by a few firings.
-- `dtrace -l` lists one row per function that contains a site, named by its
-  mangled symbol, which changes between builds. Scripts select probes by
-  provider and name.
+- On macOS `dtrace -l` lists one row per function that contains a site,
+  named by its mangled symbol, which changes between builds. Scripts select
+  probes by provider and name. On FreeBSD all sites of one probe definition
+  are one row.
 - A function that nothing calls after optimization has no site, but its
-  registry record stays; `cargo anyprobe list` marks it on Linux and macOS.
+  registry record stays; `cargo anyprobe list` marks it on Linux, macOS and
+  FreeBSD.
 
 `symbol` keeps one function out of line, with one stable symbol.
 
@@ -133,8 +141,10 @@ Methods are named after the function, so two `new` methods share probe names
 unless one sets `name = "..."`. Arguments that differ are still passed
 correctly at each site, but a script has to tell the sites apart by function.
 `cargo anyprobe list` warns about the case and the generated scripts print no
-arguments for it. Only DTrace (`probefunc`) has been checked; bpftrace has
-not.
+arguments for it. On macOS DTrace's `probefunc` is the mangled symbol, which
+names the impl. On FreeBSD it is the function's name, `new` for both, so only
+the probe id tells them apart; each keeps its own argument types. bpftrace
+has not been checked.
 
 ### `autoref`
 
@@ -158,10 +168,15 @@ Windows backends have none.
 
 A shared library built from Rust (`cdylib`) carries its own probes: SDT notes
 in the `.so`, DOF in the `.dylib` that the dynamic loader registers when the
-library loads, and an ETW provider in the DLL that unregisters when it
-unloads. Tracers attach to the library's file (`usdt:/path/lib.so:...`) or
-to a process that loaded it. Nobody has run a tracer against a probe in a
-shared library yet. `anyprobe::list()` called from the library lists the
+library loads, a site table in a FreeBSD `.so` that the library's own
+constructor registers, and an ETW provider in the DLL that unregisters when
+it unloads. Tracers attach to the library's file (`usdt:/path/lib.so:...`)
+or to a process that loaded it. On FreeBSD a `cdylib` loaded with `dlopen`
+has been traced alongside the executable, both using one provider name, and
+its probes went away at `dlclose` when it had a provider of its own (see
+[Shared providers outlive `dlclose`](#shared-providers-outlive-dlclose)).
+Nobody has run a tracer against a probe in a shared library on the other
+platforms yet. `anyprobe::list()` called from the library lists the
 library's probes, and `cargo anyprobe` reads the library file like an
 executable.
 
@@ -222,22 +237,24 @@ panic when the value is locked or borrowed.
 
 ### Each firing costs about a microsecond
 
-On Linux and macOS each firing of a traced probe is a trap into the kernel;
-on Windows it is a system call. A probe that fires often slows the program
-while traced, and a predicate in the tracer runs after the trap. When the
-tracer's buffers fill, events are dropped rather than the program blocked.
+On Linux, macOS and FreeBSD each firing of a traced probe is a trap into the
+kernel; on Windows it is a system call. A probe that fires often slows the
+program while traced, and a predicate in the tracer runs after the trap. When
+the tracer's buffers fill, events are dropped rather than the program blocked.
 [PERFORMANCE.md](PERFORMANCE.md) has the measurements.
 
 ### What a tracer writes into the process
 
-On Linux and macOS the kernel writes a breakpoint over each site of a traced
-probe, in the process's own copy of the code page, and on Linux raises the
-probe's semaphore. It removes both when the tracer exits, including when the
-tracer is killed. A site placed wrongly would put the breakpoint in the
+On Linux, macOS and FreeBSD the kernel writes a breakpoint over each site of a
+traced probe, in the process's own copy of the code page, and on Linux raises
+the probe's semaphore. It removes both when the tracer exits, including when
+the tracer is killed. A site placed wrongly would put the breakpoint in the
 middle of an instruction; the attach checks confirm each site is a `nop`
-(Linux) or a rewritten call (macOS) inside its function, for release and
-fat LTO builds. On Windows nothing in the code changes: ETW calls the
-provider's enable callback, which sets a flag per probe.
+(Linux) or a rewritten call (macOS) inside its function, for release and fat
+LTO builds. On FreeBSD the site table holds the address of each site's own
+label, which the assembler places on the instruction. On Windows nothing in
+the code changes: ETW calls the provider's enable callback, which sets a flag
+per probe.
 
 ## Registry and `cargo anyprobe`
 
@@ -268,6 +285,43 @@ A record holds no pointers and has a version. A reader rejects an unknown
 version instead of guessing, so a `cargo-anyprobe` older than the crate that
 built the binary stops with an error. `cargo-anyprobe` depends on `anyprobe`
 with an exact version for the same reason.
+
+## FreeBSD runtime
+
+### Registration can fail
+
+The probes reach the kernel through a constructor that runs as the
+executable or library loads. It fails if DTrace is not loaded yet (a
+program started before `kldload dtraceall` has no probes until it restarts)
+or if the program may not open `/dev/dtrace/helper`, which is `root:wheel`,
+mode `0660`, by default. The program then runs with its probes off. C
+programs built with `dtrace -G` are in the same position, since `drti.o`
+opens the same device, and they give up silently. `anyprobe::registration()`
+returns the reason instead; nothing is printed. A devfs rule that opens the
+device to the program's group changes this, and only an administrator can
+add one.
+
+### Shared providers outlive `dlclose`
+
+A library unloaded with `dlclose` unregisters its probes, and the kernel
+removes them, unless another object in the process uses the same provider
+name. `fasttrap` removes a provider only when the last object using it
+unregisters, so until then `dtrace -l` still lists the library's probes. C
+programs behave the same way. A library that may be unloaded can use a
+provider name of its own.
+
+### Startup work
+
+Each executable or library that links anyprobe parses its site table, builds
+DOF and makes one `ioctl` before `main` (or before `dlopen` returns), with an
+allocation for the DOF that lives as long as the object. Nobody has timed it.
+
+### Argument types in `dtrace -l -v`
+
+`dtrace -l -v` shows "Argument Types: None" for every probe, though the DOF
+carries each argument's C type and typed `args[N]` works in a D program.
+FreeBSD 15.0's `dtrace` shows the same for a `pid` probe, so this looks like
+how it lists probes rather than something the crate could change.
 
 ## Windows runtime
 

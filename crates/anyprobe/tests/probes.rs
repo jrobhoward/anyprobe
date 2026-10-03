@@ -84,6 +84,8 @@ fn backend____this_target____is_named() {
         any(target_arch = "x86_64", target_arch = "aarch64")
     )) {
         "macos-dtrace"
+    } else if cfg!(all(target_os = "freebsd", target_arch = "x86_64")) {
+        "freebsd-dtrace"
     } else if cfg!(windows) {
         "windows-etw"
     } else {

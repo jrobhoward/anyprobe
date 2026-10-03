@@ -92,20 +92,29 @@ pub fn read(path: &Path, arch: Option<&str>) -> Result<Binary, Error> {
 
 type Read = (Vec<u8>, HashSet<(String, String)>);
 
-/// The `anyprobe_probes` section, and the probes in `.note.stapsdt`.
+/// The `anyprobe_probes` section, and the probes in `.note.stapsdt` (Linux)
+/// and `anyprobe_sites` (FreeBSD).
 fn read_elf(elf: &Elf<'_>, bytes: &[u8]) -> Result<Read, String> {
     let mut registry = Vec::new();
+    let mut sites = HashSet::new();
     for header in &elf.section_headers {
-        if elf.shdr_strtab.get_at(header.sh_name) == Some("anyprobe_probes")
+        let name = elf.shdr_strtab.get_at(header.sh_name);
+        if name == Some("anyprobe_probes")
             && let Some(range) = header.file_range()
         {
             registry = bytes
                 .get(range)
                 .ok_or("anyprobe_probes section is past the end of the file")?
                 .to_vec();
+        } else if name == Some("anyprobe_sites")
+            && let Some(range) = header.file_range()
+        {
+            let table = bytes
+                .get(range)
+                .ok_or("anyprobe_sites section is past the end of the file")?;
+            read_site_table(table, elf.little_endian, &mut sites)?;
         }
     }
-    let mut sites = HashSet::new();
     // A note's description is three addresses (the site, `.stapsdt.base`,
     // the semaphore), then the provider, name and arguments, each ending
     // with a NUL.
@@ -128,6 +137,48 @@ fn read_elf(elf: &Elf<'_>, bytes: &[u8]) -> Result<Read, String> {
         }
     }
     Ok((registry, sites))
+}
+
+/// Adds the probes in a FreeBSD site table to `sites`. Each record is its
+/// length (4 bytes, the target's byte order), version, kind, 2 zero bytes,
+/// the site address (8 bytes), then the NUL-terminated provider and probe
+/// name; zero bytes between records are skipped 8 at a time. Only the names
+/// are read, so the site addresses, which the dynamic linker fills in for a
+/// position-independent executable, do not matter.
+fn read_site_table(
+    table: &[u8],
+    little_endian: bool,
+    sites: &mut HashSet<(String, String)>,
+) -> Result<(), String> {
+    const HEADER_LEN: usize = 16;
+    let mut offset = 0;
+    while offset < table.len() {
+        let rest = &table[offset..];
+        if rest.iter().take(8).all(|&b| b == 0) {
+            offset += rest.len().min(8);
+            continue;
+        }
+        let bad = || format!("bad site record at byte {offset} of anyprobe_sites");
+        let len = rest.get(..4).ok_or_else(bad)?;
+        let len = [len[0], len[1], len[2], len[3]];
+        let len = if little_endian {
+            u32::from_le_bytes(len)
+        } else {
+            u32::from_be_bytes(len)
+        } as usize;
+        let record = rest
+            .get(..len)
+            .filter(|_| len >= HEADER_LEN)
+            .ok_or_else(bad)?;
+        let mut strings = record[HEADER_LEN..]
+            .split(|&b| b == 0)
+            .map(String::from_utf8_lossy);
+        if let (Some(provider), Some(name)) = (strings.next(), strings.next()) {
+            sites.insert(site_key(&provider, &name));
+        }
+        offset += len;
+    }
+    Ok(())
 }
 
 /// The `__DATA,__anyprobe` section, and the probes in the `__TEXT,__dof_*`

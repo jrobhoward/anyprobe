@@ -11,6 +11,12 @@
 
 pub(crate) const NAME: &str = "linux-sdt";
 
+/// Nothing registers at runtime on this target.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn registration() -> Result<(), crate::RegistrationError> {
+    Ok(())
+}
+
 /// Emits a probe's registry record. Called by `probes!`.
 #[doc(hidden)]
 #[macro_export]

@@ -93,8 +93,10 @@ fn list____this_binary____shows_each_probe_with_its_arguments() {
         "{out}"
     );
     assert!(out.contains("clitest:lookup__return(ret: u64)\n"), "{out}");
+    // Records are listed in section order, which is up to the linker.
+    assert!(out.contains("clitest:new__entry\n    ("), "{out}");
     assert!(
-        out.contains("clitest:new__entry\n    (x: u32)  entry of fn new in cli, "),
+        out.contains("    (x: u32)  entry of fn new in cli, "),
         "{out}"
     );
     assert!(out.contains("    ()  entry of fn new in cli, "), "{out}");

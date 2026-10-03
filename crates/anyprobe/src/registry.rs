@@ -34,7 +34,7 @@
 //! followed by a NUL. The fields are the format version ([`VERSION`]), the
 //! provider, the probe name, the origin, the function, the module path, the
 //! file, the line and the argument count, then the name and type of each
-//! argument. The section is `anyprobe_probes` on Linux,
+//! argument. The section is `anyprobe_probes` on Linux and FreeBSD,
 //! `__DATA,__anyprobe` on macOS and `.aprobe` on Windows.
 
 use crate::error::RegistryError;
@@ -220,7 +220,8 @@ impl ProbeInfo<'_> {
     }
 
     /// The tracer argument index of each argument: `arg0`, `arg1`, ... on
-    /// Linux and macOS, where `str` and `bytes` arguments take two values.
+    /// Linux, macOS and FreeBSD, where `str` and `bytes` arguments take two
+    /// values.
     pub fn arg_indices(&self) -> impl Iterator<Item = (usize, &ArgInfo<'_>)> {
         self.args.iter().scan(0, |next, arg| {
             let index = *next;
@@ -283,9 +284,9 @@ impl Origin {
 
 /// How an argument's value reaches the tracer.
 ///
-/// On Linux and macOS every integer, `bool`, `char` and pointer is one 64-bit
-/// value, zero-extended (sign-extended for signed integers); ETW keeps the
-/// width. `str` and `bytes` are two values, a pointer and a length. The
+/// On Linux, macOS and FreeBSD every integer, `bool`, `char` and pointer is
+/// one 64-bit value, zero-extended (sign-extended for signed integers); ETW
+/// keeps the width. `str` and `bytes` are two values, a pointer and a length. The
 /// encoded types are UTF-8 strings passed like `str`, with a NUL after the
 /// last byte, so tools that read up to a NUL see the same text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -370,8 +371,8 @@ impl ArgType {
         ARG_TYPES.iter().find(|(_, n)| *n == s).map(|(t, _)| *t)
     }
 
-    /// How many tracer arguments the value takes on Linux and macOS: 2 for a
-    /// pointer and length, else 1.
+    /// How many tracer arguments the value takes on Linux, macOS and FreeBSD:
+    /// 2 for a pointer and length, else 1.
     #[must_use]
     pub fn slots(self) -> usize {
         if self.is_text() || self == ArgType::Bytes {

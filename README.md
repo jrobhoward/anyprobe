@@ -10,8 +10,9 @@ attached, a probe costs one enabled check and its arguments are not computed.
 |---|---|---|
 | Linux, x86-64 and AArch64 | SystemTap SDT notes with semaphores | bpftrace, perf |
 | macOS, x86-64 and AArch64 | DTrace USDT, built by the linker | dtrace |
+| FreeBSD, x86-64 | DTrace USDT, registered at startup | dtrace |
 | Windows | ETW TraceLogging | WPR, PerfView, logman |
-| anything else, FreeBSD included | none; probes compile to nothing | none |
+| anything else | none; probes compile to nothing | none |
 
 Status: pre-release.
 
@@ -98,7 +99,7 @@ Linux, with bpftrace (`str(ptr, len)` reads a `&str`):
 sudo bpftrace -p PID -e 'usdt:/path/to/binary:myapp:request__start { printf("%d %s\n", arg0, str(arg1, arg2)); }'
 ```
 
-macOS, with dtrace (DTrace shows `__` in a probe name as `-`):
+macOS and FreeBSD, with dtrace (DTrace shows `__` in a probe name as `-`):
 
 ```text
 sudo dtrace -p PID -n 'myapp$target:::request-start { printf("%d %s\n", arg0, copyinstr(arg1, arg2)); }'
@@ -113,10 +114,13 @@ The walkthroughs in [docs/usage](https://github.com/jrobhoward/anyprobe/tree/mai
 run the `demo` example in one terminal and a tracer in another, with the
 output to expect: [Linux](https://github.com/jrobhoward/anyprobe/blob/main/docs/usage/linux.md),
 [macOS](https://github.com/jrobhoward/anyprobe/blob/main/docs/usage/macos.md),
+[FreeBSD](https://github.com/jrobhoward/anyprobe/blob/main/docs/usage/freebsd.md),
 [Windows](https://github.com/jrobhoward/anyprobe/blob/main/docs/usage/windows.md).
 
-Select probes by provider and probe name. DTrace also reports the containing
-function, but that is the mangled Rust symbol and changes between builds.
+Select probes by provider and probe name. DTrace also reports a function: on
+macOS the mangled Rust symbol that holds the site, which changes between
+builds; on FreeBSD the name of the function `#[probe]` annotates, or nothing
+for `probes!`.
 
 An encoded argument (`debug`, `serde`, or arguments combined into one JSON
 object) is a string: a pointer and a length, followed by a NUL byte. bpftrace
@@ -144,16 +148,17 @@ cargo anyprobe wprp target/release/myapp.exe > myapp.wprp    # wpr -start myapp.
 
 `--provider` and `--probe 'fetch__*'` select probes, and `list --json` gives
 one object per definition. The linker can drop the code of a function nothing
-calls and keep its description; on Linux and macOS `list` marks such a probe
-and the scripts leave it out. Windows binaries have no per-site metadata to
-check against.
+calls and keep its description; on Linux, macOS and FreeBSD `list` marks such
+a probe and the scripts leave it out. Windows binaries have no per-site
+metadata to check against.
 
 ## Caveats
 
 - With no tracer attached a probe costs under half a nanosecond. While a
-  tracer records it, each firing costs about a microsecond on Linux and
-  macOS, where it traps into the kernel. Keep probes that fire very often out
-  of hot loops, or expect the program to slow while they are traced.
+  tracer records it, each firing costs about a microsecond on Linux, macOS
+  and FreeBSD, where it traps into the kernel. Keep probes that fire very
+  often out of hot loops, or expect the program to slow while they are
+  traced.
   [PERFORMANCE.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/PERFORMANCE.md)
   has the measurements.
 - A `debug` or `serde` argument runs its `Debug` or `Serialize` impl only
@@ -163,18 +168,25 @@ check against.
   block for an `async fn`, to capture the return value. It does not support
   `const fn`, functions that return `!`, `#[track_caller]`, or functions
   that return a future without being `async fn` (`#[async_trait]`).
-- Methods are named after the function, so two methods named `new` share
-  probe names unless one sets `name = "..."`. If their arguments differ,
-  each site still passes its own; with dtrace a script tells them apart by
-  the function it reports (`probefunc`). Nobody has tried this with bpftrace
-  yet. `cargo anyprobe list` warns about such probes, and its scripts print
-  no arguments for them.
+- Methods are named after the function, so two methods named `new` share probe
+  names unless one sets `name = "..."`. If their arguments differ, each site
+  still passes its own. On macOS a dtrace script tells them apart by the
+  function it reports (`probefunc`); on FreeBSD both report `new`, and only
+  the probe id differs. Nobody has tried this with bpftrace yet. `cargo
+  anyprobe list` warns about such probes, and its scripts print no arguments
+  for them.
 - `anyprobe::list()` reads the executable or library it is linked into, not
   shared libraries loaded alongside it. Each probe's description takes
   about 150 bytes, most of it the source file path and module path.
 
 - macOS: `sudo dtrace` attaches with System Integrity Protection on, for
   binaries that are not signed with the hardened runtime.
+- FreeBSD: the program registers its probes with the kernel as it starts.
+  DTrace has to be loaded by then (`kldload dtraceall`), and the program has
+  to be able to open `/dev/dtrace/helper`, which by default only root and
+  `wheel` can. Otherwise the program runs with its probes off, and
+  `anyprobe::registration()` says why. Other architectures than x86-64 get
+  no probes.
 - Linux: perf needs Linux 4.20 or later and a perf that passes the SDT
   semaphore to the kernel; an older perf lists the probe and records nothing.
 - Linux: SystemTap needs the binary linked with GNU ld, or with lld and
@@ -190,7 +202,8 @@ The full list of limitations is in
 ## Documentation
 
 - [Usage walkthroughs](https://github.com/jrobhoward/anyprobe/tree/main/docs/usage):
-  attaching bpftrace, dtrace and ETW to the `demo` example.
+  attaching bpftrace, dtrace (macOS and FreeBSD) and ETW to the `demo`
+  example.
 - [PERFORMANCE.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/PERFORMANCE.md):
   the cost of a probe with and without a tracer, per platform.
 - [GAPS.md](https://github.com/jrobhoward/anyprobe/blob/main/docs/GAPS.md):

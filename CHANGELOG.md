@@ -8,6 +8,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- FreeBSD x86-64 backend: DTrace USDT probes that `dtrace` attaches to with
+  `-p` or `-c`. Each site is a `nop` or `xor eax, eax` plus a record in the
+  `anyprobe_sites` section; a constructor turns the records into DOF and
+  registers it with the kernel through `/dev/dtrace/helper` when the
+  executable or library loads, and unregisters it at unload. Registration
+  needs DTrace loaded and access to the device, by default root and `wheel`
+  only; without them the program runs with its probes off. FreeBSD on other
+  architectures still compiles probes to nothing. `cargo anyprobe list`
+  marks probes with no site in a FreeBSD binary, and there is a FreeBSD
+  walkthrough (`docs/usage/freebsd.md`) and cost section in
+  `docs/PERFORMANCE.md`.
+- `anyprobe::registration()` and `RegistrationError`: whether the probes of
+  this executable or library are registered with the tracer, and if not,
+  why. Only FreeBSD registers at runtime; every other target returns `Ok`.
 - Documentation: walkthroughs that attach bpftrace, dtrace and ETW to the
   new `demo` example (`docs/usage/`), the cost of a probe with and without
   a tracer on each platform (`docs/PERFORMANCE.md`), and a comparison with
@@ -24,8 +38,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `cargo-anyprobe`: `cargo anyprobe list` lists the probes in a built binary
   for any target without running it, warns when one probe name has
   different arguments in different functions, and marks probes whose code
-  the linker removed (Linux and macOS). `bpftrace`, `dtrace` and `wprp`
-  write a bpftrace script, a D script and a WPR profile for them.
+  the linker removed (Linux, macOS and FreeBSD). `bpftrace`, `dtrace` and
+  `wprp` write a bpftrace script, a D script and a WPR profile for them.
 - `#[probe]` on `async fn`: the entry probe fires when the body starts, the
   return probe when it completes, and both pass an invocation id first so a
   tracer can pair them across interleaved calls.

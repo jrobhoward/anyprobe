@@ -1,7 +1,7 @@
 [package]
 name = "anyprobe"
 version = "0.1.0"
-description = "USDT-style probes for Rust: SystemTap SDT on Linux, DTrace on macOS, ETW on Windows"
+description = "USDT-style probes for Rust: SystemTap SDT on Linux, DTrace on macOS and FreeBSD, ETW on Windows"
 keywords = ["tracing", "usdt", "dtrace", "bpftrace", "etw"]
 readme = "../../README.md"
 categories = ["development-tools::debugging", "development-tools::profiling"]
@@ -15,6 +15,7 @@ repository.workspace = true
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
+    "x86_64-unknown-freebsd",
     "x86_64-pc-windows-msvc",
 ]
 rustdoc-args = ["--cfg", "docsrs"]
@@ -46,10 +47,19 @@ thiserror = "2.0.12"
 [target.'cfg(windows)'.dependencies]
 tracelogging_dynamic = "1.2"
 
+# FreeBSD registers probes at runtime: the site table is turned into DOF and
+# handed to the kernel through `/dev/dtrace/helper`.
+[target.'cfg(all(target_os = "freebsd", target_arch = "x86_64"))'.dependencies]
+dof = { version = "0.4", default-features = false }
+libc = "0.2.150"
+
 [dev-dependencies]
 # 0.5, not 0.8: 0.8 builds a C dependency (`alloca`) unconditionally, which
 # breaks `cargo clippy --all-targets --target ...` for every cross target.
 criterion = { version = "0.5", default-features = false }
+# The FreeBSD site table parser is plain data processing, so its tests run on
+# every host.
+dof = { version = "0.4", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # Compile-fail tests whose result depends on this crate's features, which
 # trybuild forwards only for the crate under test.

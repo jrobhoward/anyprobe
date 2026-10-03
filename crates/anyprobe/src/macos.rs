@@ -20,6 +20,12 @@
 
 pub(crate) const NAME: &str = "macos-dtrace";
 
+/// Nothing registers at runtime on this target.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn registration() -> Result<(), crate::RegistrationError> {
+    Ok(())
+}
+
 /// Emits a probe's registry record. Called by `probes!`. `no_dead_strip`
 /// keeps ld64 from removing a record nothing references.
 #[doc(hidden)]
@@ -69,6 +75,9 @@ macro_rules! __anyprobe_define_probe {
             is_enabled: $is_enabled:literal,
             stability: $stability:literal,
             typedefs: $typedefs:literal,
+            dtrace_name: $dtrace_name:literal,
+            function: $function:literal,
+            c_types: [$($c_type:literal),*],
             aarch64: [$($areg:tt = ($aval:expr)),*],
             x86_64: [$($xreg:tt = ($xval:expr)),*],
         },

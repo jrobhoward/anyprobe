@@ -12,8 +12,9 @@ enabled-check per probe; inlining is unaffected.
 ## Goals
 
 - One attribute, three OSes: Linux, macOS, Windows (no-op elsewhere).
-- FreeBSD is deferred indefinitely (see [FreeBSD](#freebsd-deferred)): it
-  compiles to the no-op backend until someone needs it.
+- FreeBSD x86_64 as a fourth OS (see [Phase 7](#phase-7-freebsd)): DTrace
+  USDT registered at runtime. Undeferred on 2026-10-03 once a FreeBSD VM was
+  available.
 - Stable probe names, independent of Rust paths and symbol mangling.
 - Near-zero disabled cost: argument encoding only runs when a tracer is attached.
 - Explicit, predictable argument encoding; optional automatic selection behind a
@@ -144,7 +145,7 @@ LLVM duplication each produce another site under the same probe name.
 |---|---|---|---|---|
 | Linux | SystemTap SDT v3 notes (`.note.stapsdt`) via `asm!` | SDT semaphore (`.probes`, kernel ≥4.20 ref_ctr) | none | bpftrace, perf (SystemTap: link flag needed, see Phase 0 results) |
 | macOS | DTrace USDT via linker relocations (`__dtrace_probe$…`, `__dtrace_isenabled$…`) | DTrace is-enabled | none (ld64 builds DOF) | `dtrace` (SIP: `--without dtrace`) |
-| FreeBSD (deferred) | no-op; the spike's DOF prototype is kept in `spike/` | `false` | — | — |
+| FreeBSD (x86_64) | DTrace USDT: `nop` / `xor eax, eax` sites plus a site table, turned into DOF at startup (Phase 7) | DTrace is-enabled (`fasttrap` emulates `xor eax, eax`) | an `.init_array` constructor per executable or library, `DTRACEHIOC_ADDDOF` on `/dev/dtrace/helper`; removed again from `.fini_array` | `dtrace` |
 | Windows | ETW TraceLogging via `tracelogging_dynamic`; one event per probe | one atomic flag, kept in sync by the provider's enable callback | lazily, on the first enabled check of any probe in the provider; unregistered at exit (`atexit`) | WPR/WPA, PerfView `*myapp`, `tracelog`, DTrace `etw` |
 | other | nothing | `false` | — | — |
 
@@ -225,6 +226,9 @@ Superseded by "Phase 4" below.
 6. Documentation from real hosts: replace the Linux and Windows walkthrough
    output and fill in the attached-cost numbers with captures from those
    machines. Design and status below.
+7. FreeBSD: a DTrace backend in `anyprobe`, `anyprobe::registration()`,
+   `cargo anyprobe` support, attach and capture scripts, a failing CI job,
+   walkthrough and costs. Design and status below.
 
 ## Phase 1: runtime and `probes!`
 
@@ -1006,22 +1010,108 @@ and every cost in `PERFORMANCE.md` was measured on a named machine.
   or says that it has not.
 - The capture scripts are in `spike/scripts/` and listed in `CLAUDE.md`.
 
-## FreeBSD (deferred)
+## Phase 7: FreeBSD
 
-Deferred indefinitely on 2026-10-02: not needed for an initial release, and
-no FreeBSD machine is available. FreeBSD builds get the no-op backend, so
-crates using anyprobe still compile there. The spike keeps the prototype:
-runtime DOF registration through `/dev/dtrace/helper` (`spike/src/freebsd.rs`,
-record parsing tested on every host) and `spike/scripts/attach-freebsd.sh`.
-Its open questions, if the work resumes:
+Deferred on 2026-10-02 for lack of a machine; undeferred on 2026-10-03. The
+spike's prototype (`spike/src/freebsd.rs`) ran on a FreeBSD 15.0 amd64 VM
+(details under "Settled on a FreeBSD VM" in Phase 0 results), which answered
+the questions it was kept for:
 
-- whether `DTRACEHIOC_ADDDOF` registration works from Rust;
-- whether `fasttrap` emulates the `xor eax, eax` is-enabled site;
-- whether an unprivileged process may open `/dev/dtrace/helper`;
-- whether `dtrace -Z -c` picks up probes registered after startup, which
-  decides between lazy registration and a static constructor.
+- `DTRACEHIOC_ADDDOF` registration works from Rust: `dtrace -l` lists
+  `spike<pid>:anyprobe-spike:work:work-entry` and `work-return`.
+- `fasttrap` emulates the `xor eax, eax` is-enabled site: attaching turns it
+  on in the running process, detaching turns it off.
+- Registration needs read-write access to `/dev/dtrace/helper`, by default
+  `0660 root:wheel`. As `nobody` it fails with `EACCES` and the probes stay
+  off. C programs are in the same position: `drti.o` (linked by `dtrace -G`)
+  opens the same device and gives up silently. A devfs rule is the
+  administrator's fix; the crate cannot change it.
+- `dtrace -Z -c` picks up probes registered after startup (all 40 of 40
+  iterations, release and release-lto).
+- An `.init_array` entry in a dependency rlib survives linking in debug,
+  release (16 codegen units) and fat LTO, even when the executable
+  references nothing in that crate. Checked with a scratch crate on the VM.
 
-CI runs `spike-freebsd` only on manual dispatch, as information.
+### Design
+
+- **Sites.** `freebsd.rs` defines `define_probe!` as the spike does: an
+  is-enabled site is `xor eax, eax` (fasttrap sets `eax` to 1 while the probe
+  is enabled), a probe site is a `nop` with the arguments in the System V
+  argument registers, where fasttrap reads them. The six-argument limit fits
+  the six registers, so no argument is on the stack. Probe sites are
+  `readonly`, is-enabled sites `nomem`, as on the other backends.
+- **Site table.** Each site emits a record into `anyprobe_sites` (flags
+  `awR`): kind, site address, provider, DTrace probe name (`__` written as
+  `-`), function, and the C type of each argument. The address is a
+  `R_X86_64_RELATIVE` relocation in a PIE, so the table cannot live in the
+  registry section, whose records hold no pointers. The registry section is
+  `anyprobe_probes`, as on Linux.
+- **Macro input.** `define_probe!`'s `dtrace` block gains `dtrace_name`,
+  `function` and `c_types`. macOS keeps encoding the types in its symbol
+  names. `function` is the function's name for `#[probe]` and empty for
+  `probes!`, which knows no function.
+- **Registration.** A `#[used]` `.init_array` entry, once per executable or
+  shared library (`__start_`/`__stop_` symbols are per object), parses the
+  table, builds DOF with the `dof` crate and calls `DTRACEHIOC_ADDDOF`. The
+  module name is the object's file name, from `dladdr` on a symbol in it, as
+  `drti.o` uses `dlinfo`. The DOF buffer lives as long as the object: the
+  kernel rejects a second registration whose buffer address matches a
+  registered one (`EALREADY`), so a freed and reused buffer would make
+  another library's probes fail. A `.fini_array` entry calls
+  `DTRACEHIOC_REMOVE` with the generation the kernel returned, so a
+  `dlclose`d library leaves no tracepoints in unmapped text. Neither entry
+  prints or panics.
+- **`anyprobe::registration()`**, on every target:
+  `Result<(), RegistrationError>`. FreeBSD returns the constructor's result;
+  Linux, macOS and the no-op targets return `Ok`, having nothing to
+  register; Windows returns `Ok` for now. It reports the object it is
+  compiled into only. Additive, with a `CHANGELOG.md` entry.
+- **Same probe name in two functions.** One DOF probe per provider, name,
+  function and argument types, as ld64 does on macOS; FreeBSD's fasttrap
+  creates each without merging. DTrace reports the function as `new` for
+  both `Foo::new` and `Bar::new`, so scripts tell them apart by probe id.
+- **`cargo anyprobe`.** It marks probes with no site using the provider and
+  probe names in `anyprobe_sites`, which need no relocation, so `.rela.dyn`
+  is not read. The user picks the script kind, so there is no OS detection;
+  FreeBSD's D syntax is macOS's.
+- **aarch64** stays on the no-op backend until someone checks fasttrap's
+  USDT support on arm64; the VM is amd64.
+
+### Status (2026-10-03)
+
+Done, and verified on the FreeBSD 15.0 amd64 VM (dtrace `Sun D 1.13`):
+
+- [x] macros: `dtrace_name`, `function`, `c_types` in the `dtrace` block
+- [x] `freebsd.rs`, `sites.rs` (site table and DOF), `registration()` and
+      `RegistrationError`. `cargo test --workspace` passes on the VM in all
+      three feature sets; clippy is clean natively there
+- [x] `cargo anyprobe` on FreeBSD ELF files
+- [x] `attach-freebsd.sh` (spike and `ATTACH_CRATE=anyprobe`) and
+      `attach-freebsd-attr.sh` pass for release and release-lto: every
+      encoding, `same_name`, `async fn`, `unwind`, `symbol` through the `pid`
+      provider, and the generated D scripts
+- [x] `capture-docs-freebsd.sh`, `docs/usage/freebsd.md`, `PERFORMANCE.md`
+      (disabled 0.37 ns per probe; attached 1.0 to 1.3 µs per firing, in a VM)
+- [x] CI: `spike-freebsd` replaced by a failing `freebsd` job (15.0 VM)
+- [x] README, ARCHITECTURE, GAPS, ALTERNATIVES, CLAUDE.md, CHANGELOG,
+      docs.rs targets
+- [x] Two objects in one process: a `dlopen`ed `cdylib` and the executable
+      sharing provider `shared` both register, each listed under its own
+      module (`host`, `libplug.so`, from `dladdr`) and both fire. At
+      `dlclose` the library's `DTRACEHIOC_REMOVE` returns 0 (ktrace), and a
+      library with a provider of its own disappears from `dtrace -l`; with a
+      shared provider its probes stay listed until the provider goes, which
+      is fasttrap's behaviour for C programs too (GAPS.md)
+- [x] `registration()` errors: `EACCES` as `nobody`, `ENOENT` with DTrace
+      unloaded, both printed by the `work` and `demo` examples
+
+Open:
+
+- [ ] The `freebsd` CI job has not run yet; `vmactions/freebsd-vm` with
+      release 15.0 is untested here
+- [ ] FreeBSD on real hardware, and other releases than 15.0
+- [ ] AArch64 FreeBSD
+- [ ] Startup cost of building and registering the DOF, not timed
 
 ## Phase 0 results
 
@@ -1070,6 +1160,21 @@ them generic. `spike/scripts/attach-{linux,macos,freebsd}.sh` and
 | ETW session reaches the provider, events decode with `tracerpt` | Yes, release and release-lto: `logman create trace` against the printed provider GUID turned `work__entry` on in the running process and off again on stop; the decoded trace held 150 (151 for release-lto) events for each of `first-site`, `second-site`, `u32`, `u64`, equally often, plus `work__return` events | `spike/scripts/attach-windows.ps1` from an elevated prompt (`logman` needs administrator rights), Windows PowerShell 5.1 with `-ExecutionPolicy Bypass` since `pwsh` was not installed |
 | anyprobe's Windows backend (lazy registration, enable callback, `tracelogging_dynamic` events) behaves like the spike | Yes, release and release-lto: `logman` session on the printed GUID turned `work__entry` on and off in the running process; the decoded trace held 151 events for each of `first-site`, `second-site`, `u32`, `u64`, equally often, plus `work__return` events. `atexit` unregistration has no check of its own | `ATTACH_CRATE=anyprobe`, `attach-windows.ps1` from an elevated Windows PowerShell 5.1 prompt, 2026-10-02 |
 | Disabled cost on Windows x86_64 (same Threadripper 1950X as the Linux measurement) | 2.397 ns probed against 1.914 ns baseline: about 0.48 ns for two probes, 0.24 ns each — in the same range as Linux x86_64 (0.39 ns/probe) on identical hardware | criterion, `work_outlined` vs `baseline`, `cargo bench -p anyprobe-spike --bench disabled_cost` |
+
+### Settled on a FreeBSD VM (FreeBSD 15.0-RELEASE amd64, 2026-10-03)
+
+DTrace `Sun D 1.13`, `kldload dtraceall` by hand (not loaded at boot). The
+spike ran as a `wheel` user and dtrace as root, by hand rather than through
+`attach-freebsd.sh`, since the VM has no `sudo` or `doas`.
+
+| Question | Result | How it was checked |
+|---|---|---|
+| Workspace builds and tests natively | Yes: `cargo build --workspace --all-targets` and `cargo test --workspace` pass with rustc 1.93.1 (`anyprobe` itself is the no-op backend there) | on the VM |
+| Runtime DOF registration from Rust | Yes: provider `spike<pid>`, module `anyprobe-spike`, function `work`, probes `work-entry` and `work-return` | `dtrace -l -P spike<pid>` |
+| `dtrace -p` attach, is-enabled site, argument reads | Yes, release and release-lto: `entry-enabled=true` on attach and `false` on detach; 150 firings for each of `first-site`, `second-site`, `u32`, `u64` and 600 `work-return` in three seconds | the `attach-freebsd.sh` D program, `dtrace -q -p` |
+| `dtrace -Z -c` with registration in `main` | Yes, release and release-lto: 40 of 40 iterations per label | `dtrace -q -Z -c "spike 40 50"` |
+| Unprivileged registration | Only with access to `/dev/dtrace/helper` (`0660 root:wheel`): works for a `wheel` member, `register-error=Permission denied (os error 13)` as `nobody` | `su -m nobody -c` |
+| Disabled cost on FreeBSD x86_64 (VM on the same Threadripper 1950X as the Linux measurement) | 2.40 ns probed against 1.66 ns baseline: about 0.37 ns per probe, the same as Linux x86_64 | criterion, `cargo bench -p anyprobe-spike --bench disabled_cost` (1 s warm-up, 3 s measurement) |
 
 ### Found by the spike
 
