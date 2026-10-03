@@ -1,7 +1,8 @@
 //! `#[probe]` on `async fn`, with `unwind`, and with `symbol`, for
 //! `spike/scripts/attach-macos-attr.sh`.
 //!
-//! Usage: `attr_async [ITERATIONS] [INTERVAL_MS]` (defaults 1 and 20). Each
+//! Usage: `attr_async [ITERATIONS] [INTERVAL_MS]` (defaults 1 and 20). On
+//! Windows it first prints the provider's ETW GUID. Each
 //! iteration, with `i` the iteration number:
 //!
 //! - polls two `fetch` calls, `fetch(2i, "/a")` and `fetch(2i + 1, "/bb")`,
@@ -70,6 +71,13 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let iterations: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(1);
     let interval = Duration::from_millis(args.next().and_then(|a| a.parse().ok()).unwrap_or(20));
+    #[cfg(windows)]
+    {
+        // `attach-windows-attr.ps1` reads the provider GUID to start its session.
+        let guid = anyprobe::__private::etw::guid_string("attr_async");
+        let _ = writeln!(std::io::stdout(), "etw-provider=attr_async etw-guid={guid}");
+        let _ = std::io::stdout().flush();
+    }
     // `may_panic` panics on purpose; its message is noise here.
     std::panic::set_hook(Box::new(|_| {}));
 

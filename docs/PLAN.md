@@ -643,12 +643,23 @@ Checked on the macOS host:
   `pid` provider through the symbol `attr_async__exported`. The script's awk
   checks were also tested on simulated broken output.
 
+Checked on Windows 11 (x86_64), release and release-lto, with `logman` and
+`tracerpt` (`spike/scripts/attach-windows-attr.ps1`, run elevated; the
+`attach-windows.ps1` checks also pass for the spike and the `work` example):
+about 150 `attr_async` iterations per session, 300 `fetch` returns each
+paired with its entry by invocation id and carrying `id * 10 + path.len()`,
+with the calls interleaved; the cancelled `slow` fired its unwind probe with
+`panicking` false and its entry's invocation id, and its return probe never;
+`may_panic` returned for even ids and unwound for odd ids, matching its
+entries; `exported` fired entry and return. ETW decodes `panicking` as
+`false`, not 0. A session starts after the process, so the script checks
+every recorded event rather than counting them. On Windows `symbol` is only
+a symbol name for debuggers; nothing attaches by it.
+
 Not yet:
 
-- Linux and Windows: the `attr_async` example is not in
-  `attach-linux-attr.sh` or `attach-windows-attr.ps1`. On Linux, `symbol` is
-  for `uprobe:BIN:attr_async__exported`; on Windows it is only a symbol name
-  for debuggers.
+- Linux: the `attr_async` example is not in `attach-linux-attr.sh`. `symbol`
+  is for `uprobe:BIN:attr_async__exported`.
 
 ## FreeBSD (deferred)
 

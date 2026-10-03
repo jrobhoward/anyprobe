@@ -325,9 +325,10 @@ Before considering any change complete:
   `attach-macos.sh` (sudo) and `attach-windows.ps1` (elevated prompt, with
   `-ExecutionPolicy Bypass`). `#[probe]` has an attach script on Linux
   (`attach-linux-attr.sh`), macOS (`attach-macos-attr.sh`, sudo) and
-  Windows (`attach-windows-attr.ps1`). Only the macOS script covers `async
-  fn`, `unwind` and `symbol` (the `attr_async` example) so far. Run the macOS scripts as yourself, not
-  under `sudo`: they call `sudo` for dtrace only, and cargo run as root
+  Windows (`attach-windows-attr.ps1`). The macOS and Windows scripts cover
+  `async fn` and `unwind` (the `attr_async` example); only macOS covers
+  `symbol` by name, since Windows has no tracer that attaches by symbol. Run
+  the macOS scripts as yourself, not under `sudo`: they call `sudo` for dtrace only, and cargo run as root
   leaves root-owned files in `target/`
 - `cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe` passes
 
