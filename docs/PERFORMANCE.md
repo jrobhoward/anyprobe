@@ -7,7 +7,7 @@ records it, and how each platform differs.
 |---|---|---|
 | Linux | one load and compare of the SDT semaphore: about 0.4 ns | one breakpoint trap into the kernel and the tracer's BPF program: about 0.5 µs in the kernel's own benchmark, not measured here |
 | macOS | one instruction that ld64 wrote to set the result to false: about 0.16 ns | two traps into the kernel and the D clause: 0.7 to 2.1 µs measured |
-| Windows | one load of an atomic flag: about 0.24 ns | no trap; the event is built in the process and written with one system call: not measured |
+| Windows | one load of an atomic flag: about 0.24 ns | no trap; the event is built in the process and written with one system call: 0.4 to 0.5 µs measured |
 | other targets | nothing; the check is the constant `false` | no tracer |
 
 ## With no tracer attached
@@ -144,8 +144,25 @@ sequenceDiagram
 
 There is no trap and nothing in the program's code changes. Each firing
 builds the event in a thread-local buffer, writing the event name and field
-names along with the values, and makes one system call. The cost has not been
-measured.
+names along with the values, and makes one system call. Measured with the
+`overhead` example on an AMD Threadripper 1950X, Windows 11 Home (10.0.26100),
+Balanced power plan, 100,000 calls of each function, each call firing an
+entry and a return probe, with a session recording every event:
+
+| Session | `native` | `encoded` |
+|---|---|---|
+| none attached | 2.6 ns per call | 2.4 ns per call |
+| `wpr` with the generated profile, to a file | 864 ns per call | 1093 ns per call |
+| `logman` with 1024 KB buffers, to a file | 847 ns per call | 1086 ns per call |
+
+That is 0.4 to 0.5 µs per firing, with `encoded` about 0.1 µs higher for
+formatting its argument with `{:?}`. Both sessions used 1024 KB buffers, at
+least 64 of them. `tracerpt` counted 800,072 events in the `wpr` trace (133 MB)
+and 800,002 in the `logman` trace (130 MB), against the 800,000 the example
+fires, and no lost events or buffers in either. An earlier `logman` run with
+its default buffers wrote a 58 MB trace, which fits dropped events, so
+the buffer size matters for a program that fires this fast. Each figure is one
+run.
 
 A session enables a whole provider, so every probe in it turns on together.
 On Linux and macOS a tracer turns on only the probes it names.
