@@ -32,7 +32,9 @@ cargo test some____test____name                   # single test
 # then review the diff before committing it.
 TRYBUILD=overwrite cargo test -p anyprobe-macros --test ui
 
-# Lint (must be clean before any change is considered done)
+# Lint (must be clean before any change is considered done). CI runs the
+# latest stable clippy, which adds lints with each release; a local toolchain
+# that lags passes code CI rejects. `rustup update stable` first.
 cargo clippy --workspace --all-targets -- -Dwarnings
 cargo fmt --all -- --check
 

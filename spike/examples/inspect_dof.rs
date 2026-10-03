@@ -40,9 +40,8 @@ fn cstr(strtab: &[u8], offset: u32) -> String {
 }
 
 fn u32s(buf: &[u8]) -> Vec<u32> {
-    buf.chunks_exact(4)
-        .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+    let (words, _) = buf.as_chunks::<4>();
+    words.iter().map(|&w| u32::from_ne_bytes(w)).collect()
 }
 
 #[derive(Clone, Copy, PartialEq)]
