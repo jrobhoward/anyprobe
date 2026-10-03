@@ -99,10 +99,11 @@ done
 # ok/FAIL per check. The CI jobs run the same scripts. They check the spike by
 # default; ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example,
 # which has the same probes. Linux and macOS ask for sudo; Windows needs an
-# elevated prompt. On macOS, SPIKE_ATTACH=0 runs only the checks that need no
-# root, and SPIKE_TARGET=x86_64-apple-darwin checks an Intel build.
+# elevated prompt. For the macOS scripts and attach-linux-attr.sh,
+# SPIKE_ATTACH=0 runs only the checks that need no root; on macOS,
+# SPIKE_TARGET=x86_64-apple-darwin checks an Intel build.
 spike/scripts/attach-linux.sh            # bpftrace
-spike/scripts/attach-linux-attr.sh       # bpftrace on `#[probe]`, every encoding
+spike/scripts/attach-linux-attr.sh       # bpftrace on `#[probe]`: encodings, async, unwind, symbol
 spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
 # SystemTap (not in CI) needs file offsets equal to addresses, which rust-lld
 # does not produce by default; STAP picks a stap newer than the distro's.
@@ -325,9 +326,10 @@ Before considering any change complete:
   `attach-macos.sh` (sudo) and `attach-windows.ps1` (elevated prompt, with
   `-ExecutionPolicy Bypass`). `#[probe]` has an attach script on Linux
   (`attach-linux-attr.sh`), macOS (`attach-macos-attr.sh`, sudo) and
-  Windows (`attach-windows-attr.ps1`). The macOS and Windows scripts cover
-  `async fn` and `unwind` (the `attr_async` example); only macOS covers
-  `symbol` by name, since Windows has no tracer that attaches by symbol. Run
+  Windows (`attach-windows-attr.ps1`). All three scripts cover `async fn` and
+  `unwind` (the `attr_async` example); macOS (`pid` provider) and Linux
+  (uprobe) cover `symbol` by name, since Windows has no tracer that attaches
+  by symbol. Run
   the macOS scripts as yourself, not under `sudo`: they call `sudo` for dtrace only, and cargo run as root
   leaves root-owned files in `target/`
 - `cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe` passes

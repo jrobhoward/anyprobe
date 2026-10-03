@@ -185,7 +185,8 @@ jobs:
   # flipped inside the process when bpftrace attached and back when it
   # detached, and bpftrace read the arguments from every site. `crate` picks
   # the spike or the anyprobe crate's `work` example (same probes); the
-  # anyprobe rows also check `#[probe]` with the `attr` example.
+  # anyprobe rows also check `#[probe]` with the `attr` and `attr_async`
+  # examples (`async fn`, `unwind`, and `symbol` through a uprobe).
   spike-linux:
     name: attach / ${{ matrix.crate }} / ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}
@@ -203,7 +204,8 @@ jobs:
         run: bash spike/scripts/attach-linux.sh ${{ matrix.profile }}
         env:
           ATTACH_CRATE: ${{ matrix.crate }}
-      # `#[probe]`: every encoding read back by bpftrace.
+      # `#[probe]`: every encoding, `async fn`, `unwind` and `symbol`, read
+      # back by bpftrace.
       - name: Attach bpftrace to #[probe]
         if: matrix.crate == 'anyprobe'
         run: bash spike/scripts/attach-linux-attr.sh ${{ matrix.profile }}

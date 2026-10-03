@@ -656,10 +656,21 @@ entries; `exported` fired entry and return. ETW decodes `panicking` as
 every recorded event rather than counting them. On Windows `symbol` is only
 a symbol name for debuggers; nothing attaches by it.
 
-Not yet:
-
-- Linux: the `attr_async` example is not in `attach-linux-attr.sh`. `symbol`
-  is for `uprobe:BIN:attr_async__exported`.
+Checked on Linux x86_64 (kernel 6.8, bpftrace 0.20.2), release and
+release-lto (`spike/scripts/attach-linux-attr.sh`, sudo; `attach-linux.sh`
+also passes for the spike and the `work` example): the `attr_async` glibc
+build has one SDT note per probe, each on a `nop`, and
+`attr_async__exported` is a global `FUNC` symbol. Run under `bpftrace -c`
+for 20 iterations, so the counts are exact: 40 `fetch` entries and 40
+returns, every return paired with its entry by a unique non-zero invocation
+id and carrying the matching value, the second call of each pair returning
+first; the cancelled `slow` fired its unwind probe 20 times with
+`panicking` 0 and its entry's invocation id, and its return probe never;
+`may_panic` fired entry 20, return 10 and unwind 10 times; `exported` was
+read with ids 0 to 19 both by its USDT probe and by
+`uprobe:BIN:attr_async__exported`. `bpftrace -c` raised the semaphores of a
+process it started, as `-p` does for a running one. AArch64 Linux is
+checked by the same script in CI only.
 
 ## FreeBSD (deferred)
 
