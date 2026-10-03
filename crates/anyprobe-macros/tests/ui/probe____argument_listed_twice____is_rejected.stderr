@@ -3,11 +3,3 @@ error: `opts` is already listed in `debug(..)`
   |
 4 | #[anyprobe::probe(provider = "t", debug(opts), skip(opts))]
   |                                                     ^^^^
-
-warning: unused variable: `opts`
- --> tests/ui/probe____argument_listed_twice____is_rejected.rs:5:8
-  |
-5 | fn hit(opts: Opts) {}
-  |        ^^^^ help: if this is intentional, prefix it with an underscore: `_opts`
-  |
-  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default

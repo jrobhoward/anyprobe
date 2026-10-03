@@ -1,5 +1,6 @@
 //! `#[probe]` on functions with each kind of argument encoding, for
-//! `spike/scripts/attach-linux-attr.sh`.
+//! `spike/scripts/attach-linux-attr.sh` and
+//! `spike/scripts/attach-windows-attr.ps1`.
 //!
 //! Usage: `attr [ITERATIONS] [INTERVAL_MS]`; `ITERATIONS` of 0 (the default)
 //! runs until killed. Each iteration calls every probed function once with
@@ -64,6 +65,11 @@ fn main() {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "pid={}", std::process::id());
     let _ = writeln!(out, "backend={}", anyprobe::BACKEND);
+    #[cfg(windows)]
+    {
+        let guid = anyprobe::__private::etw::guid_string("attr");
+        let _ = writeln!(out, "etw-provider=attr etw-guid={guid}");
+    }
     let _ = out.flush();
 
     let q = Query {

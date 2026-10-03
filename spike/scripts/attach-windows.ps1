@@ -38,9 +38,11 @@ if (-not $isAdmin) {
 if ($env:ATTACH_CRATE -eq 'anyprobe') {
     $packageArgs = @('-p', 'anyprobe', '--example', 'work')
     $binRel = 'examples\work.exe'
+    $checked = 'anyprobe example work'
 } else {
     $packageArgs = @('-p', 'anyprobe-spike')
     $binRel = 'anyprobe-spike.exe'
+    $checked = 'anyprobe-spike'
 }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) "anyprobe-spike-$PID"
@@ -58,7 +60,7 @@ function Expect([string] $What, [bool] $Ok) {
 
 try {
     foreach ($p in $Profiles) {
-        Write-Host "== $p"
+        Write-Host "== $p ($checked)"
         $script:profileFailed = $false
         cargo build -q @packageArgs --profile $p
         if ($LASTEXITCODE -ne 0) {
@@ -76,7 +78,7 @@ try {
             -RedirectStandardOutput $log -NoNewWindow -PassThru
         Start-Sleep -Seconds 2
         $match = Select-String -Path $log -Pattern 'etw-guid=(\{[0-9a-fA-F-]+\})'
-        Expect 'spike printed its provider GUID' ($null -ne $match)
+        Expect 'probe binary printed its provider GUID' ($null -ne $match)
         if ($null -eq $match) {
             Stop-Process -Id $proc.Id
             Get-Content $log

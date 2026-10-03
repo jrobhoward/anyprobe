@@ -1,5 +1,5 @@
 error[E0277]: the trait bound `Opts: serde::Serialize` is not satisfied
- --> tests/ui/serde/serde____without_serialize____is_rejected.rs:4:41
+ --> tests/ui_rustc/serde/serde____without_serialize____is_rejected.rs:4:41
   |
 4 |   #[anyprobe::probe(provider = "t", serde(opts))]
   |                                           ^---
@@ -10,7 +10,7 @@ error[E0277]: the trait bound `Opts: serde::Serialize` is not satisfied
   | |___________^ unsatisfied trait bound
   |
 help: the trait `serde_core::ser::Serialize` is not implemented for `Opts`
- --> tests/ui/serde/serde____without_serialize____is_rejected.rs:2:1
+ --> tests/ui_rustc/serde/serde____without_serialize____is_rejected.rs:2:1
   |
 2 | struct Opts;
   | ^^^^^^^^^^^

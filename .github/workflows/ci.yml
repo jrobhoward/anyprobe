@@ -92,6 +92,20 @@ jobs:
       - run: cargo check --locked --workspace --all-targets
       - run: cargo test --locked --workspace
 
+  # Compile-fail cases whose expected output is rustc's own wording. They are
+  # `#[ignore]`d everywhere else, so a new stable rustc cannot redden the
+  # other jobs. Moving the pin means re-blessing these cases in the same PR
+  # (see CLAUDE.md).
+  ui-rustc:
+    name: UI tests (rustc 1.99.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - run: cargo test --locked -p anyprobe-macros --test ui_rustc -- --ignored
+      - run: cargo test --locked -p anyprobe --test ui_rustc -- --ignored
+      - run: cargo test --locked -p anyprobe --features autoref --test ui_rustc -- --ignored
+
   licenses:
     name: licence policy
     runs-on: ubuntu-latest
@@ -249,6 +263,10 @@ jobs:
         run: ./spike/scripts/attach-windows.ps1 -Profiles ${{ matrix.profile }}
         env:
           ATTACH_CRATE: ${{ matrix.crate }}
+      # `#[probe]`: every encoding decoded from the trace.
+      - name: Attach an ETW session to #[probe]
+        if: matrix.crate == 'anyprobe'
+        run: ./spike/scripts/attach-windows-attr.ps1 -Profiles ${{ matrix.profile }}
 
   # FreeBSD is deferred (docs/PLAN.md), so this runs only when started by
   # hand, and never fails the workflow. Root in the VM, so dtrace runs for

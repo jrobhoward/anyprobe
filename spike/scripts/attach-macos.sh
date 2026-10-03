@@ -30,9 +30,11 @@ cd "$(dirname "$0")/../.." || exit 2
 if [ "${ATTACH_CRATE:-spike}" = anyprobe ]; then
   pkg_args=(-p anyprobe --example work)
   bin_rel=examples/work
+  checked='anyprobe example work'
 else
   pkg_args=(-p anyprobe-spike)
   bin_rel=anyprobe-spike
+  checked=anyprobe-spike
 fi
 
 target=${SPIKE_TARGET:-}
@@ -67,7 +69,7 @@ cargo build -q -p anyprobe-spike --example inspect_dof || exit 2
 inspect="target/debug/examples/inspect_dof"
 
 for profile in "$@"; do
-  echo "== ${target:-$host} $profile"
+  echo "== ${target:-$host} $profile ($checked)"
   profile_failed=0
   if [ -n "$target" ]; then
     build=(cargo build -q "${pkg_args[@]}" --profile "$profile" --target "$target")

@@ -29,9 +29,20 @@ cargo test -p anyprobe-macros --test ui           # trybuild: inputs rejected un
 cargo test -p anyprobe --test ui                  # trybuild: rejections that depend on features
 cargo test some____test____name                   # single test
 
+# trybuild cases whose expected output is rustc's own wording (a missing
+# trait bound) are `#[ignore]`d, since the wording changes between rustc
+# releases. They run on the toolchain pinned in ci.yml (job `ui-rustc`,
+# currently 1.99.0): `rustup toolchain install 1.99.0` once.
+cargo +1.99.0 test -p anyprobe-macros --test ui_rustc -- --ignored
+cargo +1.99.0 test -p anyprobe --test ui_rustc -- --ignored
+cargo +1.99.0 test -p anyprobe --features autoref --test ui_rustc -- --ignored
+
 # trybuild: regenerate expected .stderr after an intended diagnostic change,
 # then review the diff before committing it. The `anyprobe` cases run once
-# per feature set, since each set picks different case directories.
+# per feature set, since each set picks different case directories. The
+# `ui_rustc` cases regenerate on the pinned toolchain only, with the commands
+# above and `TRYBUILD=overwrite`. Moving the pin (ci.yml and this file)
+# regenerates them in the same PR.
 TRYBUILD=overwrite cargo test -p anyprobe-macros --test ui
 for f in "" "--no-default-features" "--features autoref"; do
   TRYBUILD=overwrite cargo test -p anyprobe --test ui $f
@@ -99,7 +110,16 @@ RUSTFLAGS="-C link-arg=-Wl,-z,separate-loadable-segments" \
   CARGO_TARGET_DIR=target/sep-seg spike/scripts/attach-linux-stap.sh
 spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
 sh spike/scripts/attach-freebsd.sh       # deferred: spike only, dtrace -p and -Z -c
-pwsh spike\scripts\attach-windows.ps1     # logman + tracerpt
+# Windows: elevated Windows PowerShell. Execution policy blocks unsigned
+# scripts by default, so pass Bypass for this one invocation (`pwsh` is not
+# installed on most machines). Expect ok per check and a final PASS. Each
+# profile header names what was checked: `== release (anyprobe-spike)` or
+# `== release (anyprobe example work)`. The Linux and macOS scripts print the
+# same.
+powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # logman + tracerpt
+$env:ATTACH_CRATE = 'anyprobe'
+powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # the `work` example
+powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows-attr.ps1   # `#[probe]`, every encoding
 
 # Supply chain — run before adding or updating any dependency. `advisories`
 # also runs weekly in CI, since the database changes with no commit here.
@@ -236,6 +256,8 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
   silently.
 - **msrv:** `dtolnay/rust-toolchain@1.88.0`, `check --locked` and
   `test --locked`.
+- **ui-rustc:** `dtolnay/rust-toolchain@1.99.0`, the `ui_rustc` trybuild
+  tests with `-- --ignored`. The only job pinned to a specific stable.
 - **licenses** and **advisories:** separate jobs. Advisories also runs on a
   weekly cron and builds once against freshly resolved dependencies
   (`cargo update`).
@@ -262,6 +284,8 @@ the deny to this workspace.
 Before considering any change complete:
 
 - `cargo test --workspace` passes with zero failures, trybuild included
+- The `ui_rustc` tests pass on the pinned toolchain (commands under "Test")
+  after touching anything they cover
 - `cargo clippy --workspace --all-targets -- -Dwarnings` is clean
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` is clean
 - `cargo fmt --all -- --check` is clean
@@ -279,7 +303,12 @@ Before considering any change complete:
 - `CHANGELOG.md` has an entry for anything a user would notice
 - If behaviour changed on a platform, it was verified with real tools there
   (bpftrace, dtrace, an ETW session), or the fact that it was not is stated
-  plainly
+  plainly. Run the attach scripts from "Commands" on each OS, once with the
+  spike and once with `ATTACH_CRATE=anyprobe`: `attach-linux.sh` (sudo),
+  `attach-macos.sh` (sudo) and `attach-windows.ps1` (elevated prompt, with
+  `-ExecutionPolicy Bypass`). `#[probe]` has an attach script on Linux
+  (`attach-linux-attr.sh`) and Windows (`attach-windows-attr.ps1`); on macOS
+  it is checked by running the `attr` example with no tracer attached
 
 ## Docs are part of "done"
 
@@ -336,7 +365,9 @@ mod encode_tests;
 Integration tests live in each crate's `tests/`. Compile-fail tests live in
 `crates/anyprobe-macros/tests/ui/`, one case per `.rs` file with its expected
 `.stderr` beside it; cases whose result depends on `anyprobe`'s features live
-in `crates/anyprobe/tests/ui/<feature-set>/`.
+in `crates/anyprobe/tests/ui/<feature-set>/`. A case whose output is mostly
+rustc's wording rather than a message this repo writes goes in the matching
+`tests/ui_rustc/` directory instead (run by `ui_rustc.rs`, `#[ignore]`d).
 
 **Test naming:** `subject____condition____result` — exactly four underscores
 between segments. Because consecutive underscores trip `non_snake_case`, every

@@ -1,11 +1,11 @@
 error[E0277]: `Opts` has no probe encoding
- --> tests/ui/autoref/unlisted____neither_debug_nor_serialize____is_rejected.rs:4:23
+ --> tests/ui_rustc/autoref/unlisted____neither_debug_nor_serialize____is_rejected.rs:4:23
   |
 4 | fn hit(id: u64, opts: Opts) {}
   |                       ^^^^ implements neither `serde::Serialize` nor `Debug`
   |
 help: the trait `anyprobe::__private::autoref::NoEncoding` is not implemented for `Opts`
- --> tests/ui/autoref/unlisted____neither_debug_nor_serialize____is_rejected.rs:1:1
+ --> tests/ui_rustc/autoref/unlisted____neither_debug_nor_serialize____is_rejected.rs:1:1
   |
 1 | struct Opts;
   | ^^^^^^^^^^^

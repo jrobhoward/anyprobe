@@ -3,11 +3,3 @@ error: `ret` needs a return value; this function returns `()`
   |
 1 | #[anyprobe::probe(provider = "t", ret = debug)]
   |                                         ^^^^^
-
-warning: unused variable: `id`
- --> tests/ui/probe____ret_without_return_value____is_rejected.rs:2:8
-  |
-2 | fn hit(id: u64) {}
-  |        ^^ help: if this is intentional, prefix it with an underscore: `_id`
-  |
-  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default

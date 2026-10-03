@@ -30,9 +30,11 @@ cd "$(dirname "$0")/../.." || exit 2
 if [ "${ATTACH_CRATE:-spike}" = anyprobe ]; then
   pkg_args=(-p anyprobe --example work)
   bin_rel=examples/work
+  checked='anyprobe example work'
 else
   pkg_args=(-p anyprobe-spike)
   bin_rel=anyprobe-spike
+  checked=anyprobe-spike
 fi
 
 command -v bpftrace >/dev/null || { echo "bpftrace not found; install it first" >&2; exit 2; }
@@ -56,7 +58,7 @@ expect() {
 scripts="$PWD/spike/scripts"
 
 for profile in "$@"; do
-  echo "== $profile"
+  echo "== $profile ($checked)"
   profile_failed=0
   if ! cargo build -q "${pkg_args[@]}" --profile "$profile"; then
     echo "  FAIL  build"
