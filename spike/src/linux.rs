@@ -26,7 +26,12 @@ static SEMA_WORK_RETURN: AtomicU16 = AtomicU16::new(0);
 
 /// Emits one SDT probe site: the `nop` the tracer patches, the note that
 /// describes it, and (once per object) the `.stapsdt.base` section tools use
-/// to detect prelink adjustments.
+/// to detect prelink adjustments and the byte that page-aligns `.probes`.
+///
+/// `.probes` starts on a page of its own, as in `anyprobe`'s Linux backend
+/// (which explains why): the kernel raises a semaphore for perf and
+/// `bpftrace -c` by file offset, and with rust-lld the RELRO segment can map
+/// the same file page at another address.
 ///
 /// Labels are numeric local labels so that every copy of the block, from
 /// inlining or monomorphization, assembles to another site rather than a
@@ -45,6 +50,20 @@ static SEMA_WORK_RETURN: AtomicU16 = AtomicU16::new(0);
 /// pointer arguments at the `nop`. Under `nomem` the compiler may sink or drop
 /// a store to a buffer whose only reader is the probe — such as an encoded
 /// argument written just before the site.
+/// Alignment of `.probes`: the largest page size the architecture's kernels use.
+#[cfg(target_arch = "x86_64")]
+macro_rules! probes_page {
+    () => {
+        "4096"
+    };
+}
+#[cfg(target_arch = "aarch64")]
+macro_rules! probes_page {
+    () => {
+        "65536"
+    };
+}
+
 macro_rules! sdt_site {
     ($provider:literal, $probe:literal, $sema:path, $args:literal, $($operands:tt)*) => {
         // SAFETY: the block executes a single `nop` and otherwise only emits
@@ -73,6 +92,15 @@ macro_rules! sdt_site {
                 ".hidden _.stapsdt.base",
                 "_.stapsdt.base: .space 1",
                 ".size _.stapsdt.base, 1",
+                ".popsection",
+                ".endif",
+                ".ifndef _.anyprobe.probes_page",
+                ".pushsection .probes, \"awGR\", \"progbits\", _.anyprobe.probes_page, comdat",
+                concat!(".balign ", probes_page!()),
+                ".weak _.anyprobe.probes_page",
+                ".hidden _.anyprobe.probes_page",
+                "_.anyprobe.probes_page: .space 1",
+                ".size _.anyprobe.probes_page, 1",
                 ".popsection",
                 ".endif",
                 sema = sym $sema,

@@ -194,6 +194,8 @@ For raw uprobes / DTrace `pid` provider / Frida use without USDT:
 
 ## Tooling (phase 4)
 
+Superseded by "Phase 4" below.
+
 - Probe registry via `linkme` distributed slice (name, provider, arg names and
   encodings, file:line), `anyprobe::list()`.
 - `cargo anyprobe list` and generators for bpftrace scripts, D scripts, and WPR
@@ -534,8 +536,8 @@ Checked on the macOS host (Apple Silicon, macOS 27), with
   macOS ld64 writes one DOF entry per function and DTrace reads each with its
   own types (see macOS above), so a script must branch on `probefunc` to
   know which arguments it has. Detecting a clash needs crate-wide knowledge
-  the macro does not have (phase 4's registry could warn at link time or at
-  startup).
+  the macro does not have. Phase 4: `cargo anyprobe list` warns about it,
+  from the registry of the linked binary.
 - Truncation is silent. A flags operand would cost one of the six, and
   bpftrace's own 64-byte default cuts long before 4096.
 - Payload cap is a constant. Configurable at runtime costs a load in the cold
@@ -671,6 +673,200 @@ read with ids 0 to 19 both by its USDT probe and by
 `uprobe:BIN:attr_async__exported`. `bpftrace -c` raised the semaphores of a
 process it started, as `-p` does for a running one. AArch64 Linux is
 checked by the same script in CI only.
+
+## Phase 4: registry, `cargo anyprobe`, script generators
+
+Supersedes "Tooling (phase 4)" above. Decided 2026-10-03: the registry is
+anyprobe's own link section of pointer-free records, not a `linkme` slice;
+`cargo anyprobe` reads built binaries and never runs them; the `tracing`
+layer is not in this phase (see "Deferred" below).
+
+### Registry records
+
+Every `define_probe!` module also emits one record, a `#[used]` static
+byte array in a dedicated section. A record holds no pointers, so the same
+bytes are read at runtime by `anyprobe::list()` and from a file on disk by
+`cargo anyprobe`, for any target, with no relocation processing.
+
+```text
+record  = magic "APRB" | u16 LE body length | body
+body    = fields, each UTF-8 and NUL-terminated:
+          version ("1"), provider, name, origin, function, module path,
+          file, line, argument count, then per argument: name, type
+origin  = probes | entry | return | unwind
+type    = u8 u16 u32 u64 usize i8 i16 i32 i64 isize bool char ptr
+          str bytes json debug auto object
+```
+
+- The proc macro writes the body with `concat!`, so `module_path!()`,
+  `file!()` and `line!()` come from the caller; a `const fn` copies it into
+  `[u8; 6 + BODY.len()]` behind the header. Built at compile time, nothing
+  runs at startup.
+- `function` is the annotated function's name for `#[probe]` (empty for
+  `probes!`). `type` is how the value reaches the tracer: the Rust integer
+  width (every integer is one 64-bit slot on Linux and macOS, its own width
+  on ETW), `str` and `bytes` take two slots (pointer, length), and `json`,
+  `debug`, `auto` (autoref: JSON or `{:?}`, chosen by type checking, which
+  the macro cannot see) and `object` (collapsed arguments) are NUL-terminated
+  strings passed like `str`. An `async fn`'s `invocation` and an unwind
+  probe's `panicking` are ordinary arguments.
+- One record per probe definition, not per site: statics are not
+  monomorphized, inlined or duplicated.
+- Sections: ELF `anyprobe_probes` (a C identifier, so `__start_` /
+  `__stop_` bound it); Mach-O `__DATA,__anyprobe` with `no_dead_strip`
+  (`section$start$__DATA$__anyprobe` / `section$end$...`, as `linkme`
+  does); PE `.aprobe$b` between `.aprobe$a` and `.aprobe$c`
+  markers that the `anyprobe` crate defines (image section names are 8
+  bytes at most). The no-op backend emits nothing and `list()` is empty.
+- The parser skips zero bytes between records (the MSVC linker may pad
+  grouped sections), rejects an unknown version with an error rather than
+  guessing, and never panics on malformed input.
+- Kept by the linker: on ELF, rustc's `#[used]` sets `SHF_GNU_RETAIN`, and
+  a scratch crate showed records surviving `--gc-sections` and fat LTO in
+  release and release-lto, including one in a module nothing calls and one
+  in a generic function (2026-10-03, rust-lld). On COFF every record's
+  object carries an `/INCLUDE:` directive for it (`llvm-readobj
+  --coff-directives`), which `/OPT:REF` honours. Mach-O (`no_dead_strip`)
+  is to be checked on the host.
+- Consequence: a probe whose code the linker dropped still has a record.
+  `cargo anyprobe` cross-checks records against the tracer metadata (SDT
+  notes on Linux, DOF on macOS) and marks probes with no site; scripts skip
+  them. Windows builds its TraceLogging metadata at runtime, so there is
+  nothing to cross-check there.
+- Only the executable's own records: `list()` does not see shared
+  libraries loaded later, and `cargo anyprobe` reads one file at a time.
+
+### Runtime API
+
+```rust
+pub fn list() -> Probes;                       // every record in this binary
+pub fn parse(section: &[u8]) -> Probes<'_>;    // records from other bytes
+// Probes: Iterator<Item = Result<ProbeInfo<'a>, RegistryError>>
+pub struct ProbeInfo<'a> { provider, name, origin, function, module_path,
+                           file, line, args: Args<'a> }   // accessors
+pub struct ArgInfo<'a> { name, ty: ArgType }
+#[non_exhaustive] pub enum Origin { Probes, Entry, Return, Unwind }
+#[non_exhaustive] pub enum ArgType { U8, ..., Str, Bytes, Json, Debug, Auto, Object }
+```
+
+`RegistryError` in `error.rs` (`thiserror`, `#[non_exhaustive]`), the
+crate's first error type. `ArgType::slots()` (1 or 2) gives the SDT / DTrace
+argument index of each argument.
+
+### `cargo anyprobe`
+
+New published crate `cargo-anyprobe` (binary). Dependencies already in the
+graph: `goblin` (ELF, Mach-O including fat, PE), `dof` (DOF on macOS),
+`serde_json`, `anyprobe` (the parser, `default-features = false`), and
+`tracelogging` without macros (`Guid::from_name`, portable). Arguments are
+parsed by hand.
+
+```text
+cargo anyprobe list     [TARGET] [--json]
+cargo anyprobe bpftrace [TARGET] [--provider P] [--probe GLOB]
+cargo anyprobe dtrace   [TARGET] [--provider P] [--probe GLOB]
+cargo anyprobe wprp     [TARGET] [--provider P]
+TARGET = PATH | --bin NAME | --example NAME  (+ --profile, --target, -p)
+```
+
+- `--bin` / `--example` run `cargo build --message-format=json` and take
+  the executable from the artifact messages; a path is read as is.
+- `list`: provider, probe, arguments with types, function and file:line.
+  Warns when one probe name has two argument layouts (the open question
+  from phase 2): DTrace then gives each function its own types and scripts
+  must branch on `probefunc`. Marks records with no site.
+- `bpftrace`: one clause per probe, `usdt:BIN:provider:name`, printing the
+  probe name and every argument by name: integers with their sign,
+  `ptr` in hex, strings with `str(ptr, len)`, `bytes` with `buf(ptr, len)`.
+  Run with `sudo bpftrace -p PID FILE`.
+- `dtrace`: the same in D, `provider$target:::name-with-dashes`,
+  `copyinstr(ptr, len)`. Run with `sudo dtrace -p PID -s FILE`.
+- `wprp`: a WPR profile enabling each provider by GUID (the name hash
+  TraceLogging uses), for `wpr -start FILE`.
+- A probe name with two layouts is printed without arguments in the
+  generated scripts, with a comment saying why.
+
+### Verification
+
+- Parser unit tests (round trip, padding, truncation, unknown version,
+  invalid UTF-8) on every host.
+- `tests/registry.rs`: `list()` in a test binary returns each probe defined
+  there, with its arguments, types and source line; empty on no-op targets.
+- CLI tests on the `attr`, `attr_async` and `same_name` examples: `list`
+  output, the same-name warning, and generated scripts compared with
+  expected files.
+- Attach: on Linux, run the generated bpftrace script against the `attr`
+  example (added to `attach-linux-attr.sh`); on macOS the generated D
+  script; on Windows `wpr -start` with the generated profile.
+- Hosts: the registry sections on Mach-O and PE, read back by
+  `cargo anyprobe list` on a host build (ld64 dead stripping, MSVC
+  `/OPT:REF`).
+
+### Status (2026-10-03)
+
+Implemented: records from both macros (`probes.rs` `registry_record`),
+`anyprobe::registry` (`list`, `parse`, `ProbeInfo`, `ArgType`, `Origin`)
+and `RegistryError`, and the `cargo-anyprobe` crate with `list` (text and
+`--json`), `bpftrace`, `dtrace` and `wprp`.
+
+Checked on the Linux x86_64 host:
+
+- Parser unit tests (13), `tests/registry.rs` (every probe shape: `probes!`,
+  entry and return with `debug`, `serde`, collapsed `object`, `async fn`
+  with `invocation` and `panicking`, sync `unwind`, a generic fn listed
+  once, `auto` under `autoref`) with exact source lines; CLI unit tests
+  and `tests/cli.rs`, which runs the CLI on its own test binary (SDT site
+  cross-check, the same-name warning, `--json`, the scripts).
+- `cargo anyprobe list` on the `attr`, `attr_async` and `same_name`
+  examples, release and release-lto: every probe listed with a site, and
+  the warning for `same_name:new__entry`'s three layouts.
+- Cross-target: the record sections reach codegen on every target
+  (`build --lib`); the COFF objects carry `/INCLUDE:` for each record
+  and the `.aprobe$a` / `$c` markers; the Mach-O objects have
+  `__DATA,__anyprobe`.
+- Each record is about 150 bytes (`attr`: 991 bytes for 8 probes), most of
+  it the file and module paths.
+
+Found on Linux by `attach-linux-attr.sh` (2026-10-03): in the release
+build of `attr_async`, no USDT probe fired under `bpftrace -c`; release-lto
+and `bpftrace -p` were fine. The kernel raises a semaphore (uprobe
+`ref_ctr_offset`) by file offset, in the first writable VMA mapping that
+file page. rust-lld writes the RELRO segment and the data segment back to
+back in the file, and `.probes` landed in the file page that ends the RELRO
+segment, which is mapped a second time at another address: the kernel
+raised that copy. The registry sections only moved the layout; the release
+`work` example and the spike had the same layout before phase 4. Fix: each
+SDT site emits, once per object, a retained comdat byte in `.probes`
+aligned to 4 KiB (x86-64) or 64 KiB (AArch64), which aligns the output
+section. Applied to the spike too. `attach-linux-attr.sh` now checks
+without root that exactly one writable segment maps the `.probes` page;
+the unfixed spike fails that check.
+
+After the fix, on Linux x86_64 (kernel 6.8, bpftrace 0.20.2, perf
+6.8.12), release and release-lto: `attach-linux-attr.sh` passes every
+check, including the bpftrace scripts `cargo anyprobe` wrote for `attr`
+and `attr_async`, run under `bpftrace -c` for 20 iterations with exact
+counts (every encoding decoded; 40 `fetch` entries and returns with
+non-zero invocation ids; 20 `slow` unwinds with `panicking=0` and no
+return; `may_panic` 20 / 10 / 10; `exported` 20 and 20).
+`attach-linux.sh` passes for the spike and the `work` example, and
+`attach-linux-perf.sh` for the spike.
+
+Not yet:
+
+- macOS: `list()` in a linked binary (`section$start`), the DOF
+  cross-check, and the generated D scripts under `sudo dtrace -c`
+  (`attach-macos-attr.sh`).
+- Windows: `list()` in a linked binary, `cargo anyprobe list` on PE, and
+  `wpr -start` with the generated profile (`attach-windows-attr.ps1`,
+  elevated).
+
+### Deferred
+
+- `tracing` layer: forwarding spans and events to fixed anyprobe probes. It
+  is independent of the registry and the CLI, and no one has asked for it.
+- Listing probes from shared libraries, and `--pid` to read a running
+  process.
 
 ## FreeBSD (deferred)
 

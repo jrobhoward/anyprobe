@@ -15,6 +15,9 @@
 #     its function (examples/inspect_dof.rs);
 #   - `same_name`'s three `new__entry` probes, which have different argument
 #     types, each get their own DOF entry;
+#   - `cargo anyprobe list` finds every probe of `attr` and `attr_async` in
+#     their registry, each with a DOF site, and `cargo anyprobe dtrace`
+#     writes one clause per probe;
 #   - under `sudo dtrace -c` with 20 iterations, exactly 20 times each:
 #     native arguments and a native return value read as written; a `serde`
 #     argument reads as its JSON, and as the same text when read up to its
@@ -31,7 +34,10 @@
 #     with `panicking` 0 and the entry's invocation id, and its return probe
 #     never; `may_panic` fires entry 20 times, return 10 and unwind 10; and
 #     `exported` is reached both by its USDT probe and, through its
-#     `symbol`, by the `pid` provider, 20 times each with ids 0 to 19.
+#     `symbol`, by the `pid` provider, 20 times each with ids 0 to 19;
+#   - the D scripts `cargo anyprobe dtrace` wrote, run under `sudo dtrace -c`
+#     for 20 iterations, print every probe of both examples with each
+#     argument decoded, the same number of times as above.
 # Encoding runs only after the enabled check, so any encoded value read
 # shows that attaching turned the check on. Works with SIP on. Prints ok/FAIL
 # per check and exits non-zero if any check failed.
@@ -72,6 +78,8 @@ lines() { test "$(grep -cE "$2" "$3")" -eq "$1"; }
 
 cargo build -q -p anyprobe-spike --example inspect_dof || exit 2
 inspect="target/debug/examples/inspect_dof"
+cargo build -q -p cargo-anyprobe || exit 2
+cli="target/debug/cargo-anyprobe"
 
 for profile in "$@"; do
   echo "== ${target:-$host} $profile (anyprobe examples attr, same_name, attr_async)"
@@ -102,6 +110,20 @@ for profile in "$@"; do
   expect "attr_async: every site rewritten and inside its function" test $? -eq 0
   expect "attr_async: symbol exported as attr_async__exported" \
     bash -c "nm '$async' | grep -qE ' T _attr_async__exported\$'"
+
+  gen="$work/gen"
+  "$cli" list "$attr" >"$gen.attr.list" 2>&1
+  expect "cargo anyprobe list: attr has 8 probes, each with a site" \
+    bash -c "tail -1 '$gen.attr.list' | grep -qx '8 probes in 1 provider' && ! grep -q 'no site' '$gen.attr.list'"
+  "$cli" list "$async" >"$gen.async.list" 2>&1
+  expect "cargo anyprobe list: attr_async has 10 probes, each with a site" \
+    bash -c "tail -1 '$gen.async.list' | grep -qx '10 probes in 1 provider' && ! grep -q 'no site' '$gen.async.list'"
+  "$cli" dtrace "$attr" >"$gen.attr.d" 2>"$gen.attr.err"
+  expect "cargo anyprobe dtrace: one clause per attr probe" \
+    test "$(grep -c '^attr\$target:::' "$gen.attr.d")" -eq 8
+  "$cli" dtrace "$async" >"$gen.async.d" 2>"$gen.async.err"
+  expect "cargo anyprobe dtrace: one clause per attr_async probe" \
+    test "$(grep -c '^attr_async\$target:::' "$gen.async.d")" -eq 10
 
   if [ "$attach" != 0 ]; then
     out="$work/attr.dtrace"
@@ -207,11 +229,49 @@ for profile in "$@"; do
     expect "attr_async: nothing unexpected" test -z "$(grep -vE \
       "^(fetch-entry|fetch-return|slow-entry|slow-unwind|may_panic-entry|exported-entry|exported-pid) |^may_panic-(return|unwind)\$|^done |^\$|$sip" \
       "$aout")"
+
+    # The generated D scripts, as they are.
+    gout="$work/gen.attr.out"
+    sudo dtrace -c "$attr $iterations 20" -s "$gen.attr.d" >"$gout" 2>&1
+    expect "generated: lookup entry and return" bash -c "
+      [ \$(grep -cE '^attr:lookup__entry id=[0-9]+ path=/index\$' '$gout') -eq $n ] &&
+      [ \$(grep -cE '^attr:lookup__return ret=[0-9]*6\$' '$gout') -eq $n ]"
+    expect "generated: query serde argument and debug return" bash -c "
+      [ \$(grep -cE '^attr:query__entry id=[0-9]+ q=\{\"table\":\"rows\",\"limit\":5\}\$' '$gout') -eq $n ] &&
+      [ \$(grep -cE '^attr:query__return ret=Ok\(5\)\$' '$gout') -eq $((n / 2)) ] &&
+      [ \$(grep -cE '^attr:query__return ret=Err\(\"odd [0-9]+\"\)\$' '$gout') -eq $((n / 2)) ]"
+    expect "generated: collapsed arguments" bash -c "
+      [ \$(grep -cE '^attr:wide__entry args=\{\"id\":[0-9]+,' '$gout') -eq $n ] &&
+      [ \$(grep -cE '^attr:wide__return\$' '$gout') -eq $n ]"
+    expect "generated: debug(self)" bash -c "
+      [ \$(grep -cE '^attr:counter_bump__entry self=Counter \{ n: [0-9]+ \} by=1\$' '$gout') -eq $n ] &&
+      [ \$(grep -cE '^attr:counter_bump__return\$' '$gout') -eq $n ]"
+    expect "generated: attr, nothing unexpected" test -z "$(grep -vE \
+      "^attr:[a-z_]+__(entry|return)( |\$)|^(pid|backend)=|^done |^\$|$sip" "$gout")"
+
+    gaout="$work/gen.async.out"
+    sudo dtrace -c "$async $iterations 20" -s "$gen.async.d" >"$gaout" 2>&1
+    expect "generated: fetch entry and return with invocation ids" bash -c "
+      [ \$(grep -cE '^attr_async:fetch__entry invocation=[1-9][0-9]* id=[0-9]+ path=/(a|bb)\$' '$gaout') -eq $((2 * n)) ] &&
+      [ \$(grep -cE '^attr_async:fetch__return invocation=[1-9][0-9]* ret=[0-9]+\$' '$gaout') -eq $((2 * n)) ]"
+    expect "generated: cancelled slow unwinds, never returns" bash -c "
+      [ \$(grep -cE '^attr_async:slow__unwind invocation=[1-9][0-9]* panicking=0\$' '$gaout') -eq $n ] &&
+      [ \$(grep -cE '^attr_async:slow__return ' '$gaout') -eq 0 ]"
+    expect "generated: may_panic entry, return and unwind" bash -c "
+      [ \$(grep -cE '^attr_async:may_panic__entry id=[0-9]+\$' '$gaout') -eq $n ] &&
+      [ \$(grep -cE '^attr_async:may_panic__return\$' '$gaout') -eq $((n / 2)) ] &&
+      [ \$(grep -cE '^attr_async:may_panic__unwind\$' '$gaout') -eq $((n / 2)) ]"
+    expect "generated: exported entry and return" bash -c "
+      [ \$(grep -cE '^attr_async:exported__entry id=[0-9]+\$' '$gaout') -eq $n ] &&
+      [ \$(grep -cE '^attr_async:exported__return\$' '$gaout') -eq $n ]"
+    expect "generated: attr_async, nothing unexpected" test -z "$(grep -vE \
+      "^attr_async:[a-z_]+__(entry|return|unwind)( |\$)|^done |^\$|$sip" "$gaout")"
   fi
 
   if [ "$profile_failed" -ne 0 ]; then
     failed=1
-    for f in attr.dof same.dof async.dof attr.dtrace same.dtrace async.dtrace; do
+    for f in attr.dof same.dof async.dof attr.dtrace same.dtrace async.dtrace \
+      gen.attr.list gen.async.list gen.attr.d gen.async.d gen.attr.out gen.async.out; do
       [ -f "$work/$f" ] && { echo "  --- $f (first 40 lines)"; head -40 "$work/$f"; }
     done
   fi

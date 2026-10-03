@@ -142,7 +142,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe
+      - run: cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe -p cargo-anyprobe
 
   # Compares the public API against the newest release on crates.io. Nothing
   # is published yet, so it reports that and passes until the first release.
@@ -186,7 +186,8 @@ jobs:
   # detached, and bpftrace read the arguments from every site. `crate` picks
   # the spike or the anyprobe crate's `work` example (same probes); the
   # anyprobe rows also check `#[probe]` with the `attr` and `attr_async`
-  # examples (`async fn`, `unwind`, and `symbol` through a uprobe).
+  # examples (`async fn`, `unwind`, and `symbol` through a uprobe), and the
+  # bpftrace scripts `cargo anyprobe` writes for them.
   spike-linux:
     name: attach / ${{ matrix.crate }} / ${{ matrix.os }} / ${{ matrix.profile }}
     runs-on: ${{ matrix.os }}

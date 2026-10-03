@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
@@ -62,6 +62,9 @@ pub(crate) struct Arg {
     /// The parameter type `fire` declares.
     pub(crate) ty: TokenStream,
     pub(crate) kind: Kind,
+    /// The argument's type in the probe registry: `kind`'s, or for an
+    /// encoded value passed as a string, its encoding.
+    pub(crate) registry_type: &'static str,
 }
 
 /// One validated probe.
@@ -70,6 +73,13 @@ pub(crate) struct Probe {
     pub(crate) vis: syn::Visibility,
     pub(crate) name: Ident,
     pub(crate) args: Vec<Arg>,
+    /// What defined the probe, for the registry: `probes`, or for
+    /// `#[probe]` `entry`, `return` or `unwind`.
+    pub(crate) origin: &'static str,
+    /// The function `#[probe]` annotates; empty for `probes!`.
+    pub(crate) function: String,
+    /// Where the probe was written, for the registry's file and line.
+    pub(crate) span: Span,
 }
 
 /// Expands a `probes!` invocation.
@@ -220,6 +230,7 @@ fn validate(item: ForeignItemFn) -> syn::Result<Probe> {
             field: arg_name.unraw().to_string(),
             name: arg_name,
             kind,
+            registry_type: kind.registry_type(),
         });
     }
 
@@ -238,8 +249,11 @@ fn validate(item: ForeignItemFn) -> syn::Result<Probe> {
     Ok(Probe {
         attrs: item.attrs,
         vis: item.vis,
+        span: name.span(),
         name,
         args,
+        origin: "probes",
+        function: String::new(),
     })
 }
 
@@ -284,6 +298,7 @@ pub(crate) fn define_named_probe(provider: &str, name_str: &str, probe: &Probe) 
         vis,
         name,
         args,
+        ..
     } = probe;
 
     let params = args.iter().map(|a| {
@@ -326,6 +341,8 @@ pub(crate) fn define_named_probe(provider: &str, name_str: &str, probe: &Probe) 
         quote!(#method(#field, (#value), #out))
     });
 
+    let registry = registry_record(provider, name_str, probe);
+
     quote! {
         #(#attrs)*
         #[allow(non_snake_case)]
@@ -348,9 +365,50 @@ pub(crate) fn define_named_probe(provider: &str, name_str: &str, probe: &Probe) 
                 },
                 etw: [#(#etw),*],
             }
+
+            #registry
         }
     }
 }
+
+/// The probe's registry record: `register!` with the record's body, the
+/// fields `anyprobe::registry` parses, each followed by a NUL. `file!()`,
+/// `line!()` and `module_path!()` expand in the caller's crate, at the
+/// probe's span.
+fn registry_record(provider: &str, name_str: &str, probe: &Probe) -> TokenStream {
+    let mut head = String::new();
+    for field in [
+        REGISTRY_VERSION,
+        provider,
+        name_str,
+        probe.origin,
+        &probe.function,
+    ] {
+        head.push_str(field);
+        head.push('\0');
+    }
+    let mut tail = format!("{}\0", probe.args.len());
+    for arg in &probe.args {
+        tail.push_str(&arg.field);
+        tail.push('\0');
+        tail.push_str(arg.registry_type);
+        tail.push('\0');
+    }
+    let span = probe.span;
+    quote_spanned! {span=>
+        ::anyprobe::__private::register!(::core::concat!(
+            #head,
+            ::core::module_path!(), "\0",
+            ::core::file!(), "\0",
+            ::core::line!(), "\0",
+            #tail
+        ));
+    }
+}
+
+/// The registry record format version, the first field of every record.
+/// `anyprobe::registry` rejects records of any other version.
+const REGISTRY_VERSION: &str = "1";
 
 #[cfg(test)]
 #[path = "probes_tests.rs"]

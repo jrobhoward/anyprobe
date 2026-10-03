@@ -26,6 +26,13 @@ For `attr_async` it checks that:
   - `exported` (`symbol`) fires its probes.
 A session starts after the example does, so the checks do not count events;
 they check every event the session did record.
+Then, with `cargo anyprobe`, it checks that:
+  - `list` reads every probe of both examples from their registry;
+  - `wprp` writes a profile enabling the provider GUID the example uses;
+  - `wpr` with that profile, started before `attr_async` runs 20 iterations,
+    records every event: 40 `fetch` entries and returns, 20 `slow` unwinds
+    and no return, 20 `may_panic` entries with 10 returns and 10 unwinds, and
+    20 `exported` entries and returns.
 -KeepTraces copies each decoded trace (XML) into DIR.
 Prints ok/FAIL per check and exits non-zero if any check failed.
 #>
@@ -236,6 +243,66 @@ try {
 
             Expect 'exported (symbol) fires entry and return' `
                 ((Of 'exported__entry').Count -ge 5 -and (Of 'exported__return').Count -ge 5)
+        }
+        if ($script:profileFailed) { Show-Failure $script:exampleXml }
+        if ($script:profileFailed) { $script:failed = $true }
+
+        Write-Host "== $p (cargo anyprobe: list, wprp)"
+        $script:profileFailed = $false
+        $script:exampleXml = $null
+        $script:exampleLog = $null
+        cargo build -q -p cargo-anyprobe
+        $cli = 'target\debug\cargo-anyprobe.exe'
+        foreach ($pair in @(@('attr', 8), @('attr_async', 10))) {
+            $ex = $pair[0]; $count = $pair[1]
+            $listed = & $cli list "target\$p\examples\$ex.exe" 2>&1
+            $last = ($listed | Select-Object -Last 1)
+            Expect "list: $ex has $count probes ($last)" ("$last" -eq "$count probes in 1 provider")
+        }
+
+        $async = "target\$p\examples\attr_async.exe"
+        $wprp = Join-Path $work "attr_async-$p.wprp"
+        & $cli wprp $async | Set-Content -Encoding ascii $wprp
+        $first = (& $async 0 0 | Select-Object -First 1)
+        $guid = [regex]::Match("$first", 'etw-guid=\{([0-9a-fA-F-]+)\}').Groups[1].Value
+        Expect "wprp: enables the provider GUID the example uses ($guid)" `
+            ($guid -ne '' -and (Get-Content $wprp -Raw) -match "Name=`"$guid`"")
+
+        # The profile is recording before the example starts, so every event
+        # is in the trace and the counts are exact.
+        $n = 20
+        $etl = Join-Path $work "wpr-$p.etl"
+        $xml = Join-Path $work "wpr-$p.xml"
+        wpr -start $wprp -filemode | Out-Null
+        $started = ($LASTEXITCODE -eq 0)
+        Expect 'wpr -start with the generated profile' $started
+        if ($started) {
+            & $async $n 20 | Out-Null
+            wpr -stop $etl | Out-Null
+            tracerpt $etl -o $xml -of XML -y | Out-Null
+            $script:exampleXml = $xml
+            if (Test-Path $xml) {
+                if ($KeepTraces -ne '') {
+                    New-Item -ItemType Directory -Force $KeepTraces | Out-Null
+                    Copy-Item $xml (Join-Path $KeepTraces "wpr-$p.xml") -Force
+                }
+                $counts = @{}
+                foreach ($e in Get-Events (Get-Content $xml -Raw)) {
+                    $counts[$e.Name] = 1 + $(if ($counts.ContainsKey($e.Name)) { $counts[$e.Name] } else { 0 })
+                }
+                function Count([string] $Name) { if ($counts.ContainsKey($Name)) { $counts[$Name] } else { 0 } }
+                foreach ($want in @(
+                        @('fetch__entry', 2 * $n), @('fetch__return', 2 * $n),
+                        @('slow__entry', $n), @('slow__unwind', $n), @('slow__return', 0),
+                        @('may_panic__entry', $n), @('may_panic__return', $n / 2),
+                        @('may_panic__unwind', $n / 2),
+                        @('exported__entry', $n), @('exported__return', $n))) {
+                    $got = Count $want[0]
+                    Expect "wpr: $($want[0]) $($want[1]) times ($got)" ($got -eq $want[1])
+                }
+            } else {
+                Expect 'wpr wrote a trace' $false
+            }
         }
         if ($script:profileFailed) { Show-Failure $script:exampleXml }
         if ($script:profileFailed) { $script:failed = $true }

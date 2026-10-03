@@ -12,6 +12,12 @@
 # For each profile it builds both examples and checks that:
 #   - `attr_async` has one SDT note per probe, each on a `nop`, and exports
 #     `attr_async__exported` as a global function;
+#   - in both examples, `.probes` starts a page that no other writable
+#     segment maps (the kernel raises semaphores by file offset, for
+#     `bpftrace -c` and perf, in the first writable mapping of the page);
+#   - `cargo anyprobe list` finds every probe of both examples in their
+#     registry, each with a site, and `cargo anyprobe bpftrace` writes one
+#     clause per probe;
 #   - with `attr` running and bpftrace attached for three seconds: native
 #     arguments and a native return value read as written; a `serde`
 #     argument reads as its JSON, and as the same text when read as a
@@ -27,7 +33,10 @@
 #     `panicking` 0 and the entry's invocation id, and its return probe
 #     never; `may_panic` fires entry 20 times, return 10 and unwind 10; and
 #     `exported` is reached both by its USDT probe and, through its
-#     `symbol`, by a uprobe, 20 times each with ids 0 to 19.
+#     `symbol`, by a uprobe, 20 times each with ids 0 to 19;
+#   - the scripts `cargo anyprobe bpftrace` wrote, run under `bpftrace -c`
+#     for 20 iterations, print every probe of both examples with each
+#     argument decoded, the same number of times as above.
 # Encoding runs only after the enabled check, so any encoded value read
 # shows that attaching turned the check on.
 # Prints ok/FAIL per check and exits non-zero if any check failed.
@@ -77,10 +86,25 @@ notes_on_nops() {
   echo ok
 }
 
+# Prints "ok" if the file page holding BIN's `.probes` section is mapped by
+# exactly one writable LOAD segment, else what maps it.
+probes_page() {
+  local bin=$1 off
+  off=$(readelf -SW "$bin" | awk '$2 == ".probes" { print $5 }')
+  [ -n "$off" ] || { echo "no .probes section"; return; }
+  readelf -lW "$bin" | awk -v page=$(( 0x$off & ~0xfff )) '
+    $1 == "LOAD" && $7 ~ /W/ {
+      off = strtonum($2); size = strtonum($5)
+      if (off < page + 4096 && off + size > page) { n++; at = at " " $2 }
+    }
+    END { print (n == 1 ? "ok" : n + 0 " writable segments map it:" at) }'
+}
+
 for profile in "$@"; do
   echo "== $profile (anyprobe examples attr, attr_async)"
   profile_failed=0
-  if ! cargo build -q -p anyprobe --example attr --example attr_async --profile "$profile"; then
+  if ! cargo build -q -p anyprobe --example attr --example attr_async --profile "$profile" \
+    || ! cargo build -q -p cargo-anyprobe; then
     echo "  FAIL  build"
     failed=1
     continue
@@ -95,13 +119,35 @@ for profile in "$@"; do
   expect "attr_async: one SDT note per probe" test "$(readelf -nW "$async" \
     | sed -n 's/^ *Name: //p' | sort | tr '\n' ' ')" = \
     "exported__entry exported__return fetch__entry fetch__return may_panic__entry may_panic__return may_panic__unwind slow__entry slow__return slow__unwind "
+  for b in "$bin" "$async"; do
+    page=$(probes_page "$b")
+    expect "$(basename "$b"): .probes on a page of its own ($page)" test "$page" = ok
+  done
   sites=$(notes_on_nops "$async")
   expect "attr_async: every SDT note on a nop ($sites)" test "$sites" = ok
   expect "attr_async: symbol exported as attr_async__exported" \
     bash -c "readelf -sW '$async' | grep -qE ' FUNC +GLOBAL +DEFAULT +[0-9]+ attr_async__exported\$'"
 
+  cli="$PWD/target/debug/cargo-anyprobe"
+  gen="$work/$profile.gen"
+  "$cli" list "$bin" >"$gen.attr.list" 2>&1
+  expect "cargo anyprobe list: attr has 8 probes, each with a site" \
+    bash -c "tail -1 '$gen.attr.list' | grep -qx '8 probes in 1 provider' && ! grep -q 'no site' '$gen.attr.list'"
+  "$cli" list "$async" >"$gen.async.list" 2>&1
+  expect "cargo anyprobe list: attr_async has 10 probes, each with a site" \
+    bash -c "tail -1 '$gen.async.list' | grep -qx '10 probes in 1 provider' && ! grep -q 'no site' '$gen.async.list'"
+  "$cli" bpftrace "$bin" >"$gen.attr.bt" 2>"$gen.attr.err"
+  expect "cargo anyprobe bpftrace: one clause per attr probe" \
+    test "$(grep -c '^usdt:' "$gen.attr.bt")" -eq 8
+  "$cli" bpftrace "$async" >"$gen.async.bt" 2>"$gen.async.err"
+  expect "cargo anyprobe bpftrace: one clause per attr_async probe" \
+    test "$(grep -c '^usdt:' "$gen.async.bt")" -eq 10
+
   if [ "$attach" = 0 ]; then
-    [ "$profile_failed" -eq 0 ] || failed=1
+    if [ "$profile_failed" -ne 0 ]; then
+      failed=1
+      for f in "$gen".*; do echo "  --- $(basename "$f")"; head -40 "$f"; done
+    fi
     continue
   fi
 
@@ -191,6 +237,43 @@ for profile in "$@"; do
     '^(fetch-entry|fetch-return|slow-entry|slow-unwind|may_panic-entry|exported-entry|exported-uprobe) |^may_panic-(return|unwind)$|^done |^Attaching |^$' \
     "$aout")"
 
+  # The generated scripts, as they are.
+  gout="$work/$profile.gen.attr.out"
+  $sudo timeout 120 bpftrace -c "$bin $iterations 20" "$gen.attr.bt" >"$gout" 2>&1
+  expect "generated: lookup entry and return" bash -c "
+    [ \$(grep -cE '^attr:lookup__entry id=[0-9]+ path=/index\$' '$gout') -eq $n ] &&
+    [ \$(grep -cE '^attr:lookup__return ret=[0-9]*6\$' '$gout') -eq $n ]"
+  expect "generated: query serde argument and debug return" bash -c "
+    [ \$(grep -cE '^attr:query__entry id=[0-9]+ q=\{\"table\":\"rows\",\"limit\":5\}\$' '$gout') -eq $n ] &&
+    [ \$(grep -cE '^attr:query__return ret=Ok\(5\)\$' '$gout') -eq $((n / 2)) ] &&
+    [ \$(grep -cE '^attr:query__return ret=Err\(\"odd [0-9]+\"\)\$' '$gout') -eq $((n / 2)) ]"
+  expect "generated: collapsed arguments" bash -c "
+    [ \$(grep -cE '^attr:wide__entry args=\{\"id\":[0-9]+,' '$gout') -eq $n ] &&
+    [ \$(grep -cE '^attr:wide__return\$' '$gout') -eq $n ]"
+  expect "generated: debug(self)" bash -c "
+    [ \$(grep -cE '^attr:counter_bump__entry self=Counter \{ n: [0-9]+ \} by=1\$' '$gout') -eq $n ] &&
+    [ \$(grep -cE '^attr:counter_bump__return\$' '$gout') -eq $n ]"
+  expect "generated: attr, nothing unexpected" test -z "$(grep -vE \
+    '^attr:[a-z_]+__(entry|return)( |$)|^(pid|backend)=|^done |^Attaching |^$' "$gout")"
+
+  gaout="$work/$profile.gen.async.out"
+  $sudo timeout 120 bpftrace -c "$async $iterations 20" "$gen.async.bt" >"$gaout" 2>&1
+  expect "generated: fetch entry and return with invocation ids" bash -c "
+    [ \$(grep -cE '^attr_async:fetch__entry invocation=[1-9][0-9]* id=[0-9]+ path=/(a|bb)\$' '$gaout') -eq $((2 * n)) ] &&
+    [ \$(grep -cE '^attr_async:fetch__return invocation=[1-9][0-9]* ret=[0-9]+\$' '$gaout') -eq $((2 * n)) ]"
+  expect "generated: cancelled slow unwinds, never returns" bash -c "
+    [ \$(grep -cE '^attr_async:slow__unwind invocation=[1-9][0-9]* panicking=0\$' '$gaout') -eq $n ] &&
+    [ \$(grep -cE '^attr_async:slow__return ' '$gaout') -eq 0 ]"
+  expect "generated: may_panic entry, return and unwind" bash -c "
+    [ \$(grep -cE '^attr_async:may_panic__entry id=[0-9]+\$' '$gaout') -eq $n ] &&
+    [ \$(grep -cE '^attr_async:may_panic__return\$' '$gaout') -eq $((n / 2)) ] &&
+    [ \$(grep -cE '^attr_async:may_panic__unwind\$' '$gaout') -eq $((n / 2)) ]"
+  expect "generated: exported entry and return" bash -c "
+    [ \$(grep -cE '^attr_async:exported__entry id=[0-9]+\$' '$gaout') -eq $n ] &&
+    [ \$(grep -cE '^attr_async:exported__return\$' '$gaout') -eq $n ]"
+  expect "generated: attr_async, nothing unexpected" test -z "$(grep -vE \
+    '^attr_async:[a-z_]+__(entry|return|unwind)( |$)|^done |^Attaching |^$' "$gaout")"
+
   if [ "$profile_failed" -ne 0 ]; then
     failed=1
     echo "  --- example output"
@@ -199,6 +282,9 @@ for profile in "$@"; do
     head -40 "$out"
     echo "  --- bpftrace output, attr_async (first 40 lines)"
     head -40 "$aout"
+    for f in "$gout" "$gaout"; do
+      [ -f "$f" ] && { echo "  --- $(basename "$f") (first 40 lines)"; head -40 "$f"; }
+    done
   fi
 done
 

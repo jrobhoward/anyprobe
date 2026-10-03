@@ -20,6 +20,41 @@
 
 pub(crate) const NAME: &str = "macos-dtrace";
 
+/// Emits a probe's registry record. Called by `probes!`. `no_dead_strip`
+/// keeps ld64 from removing a record nothing references.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_register {
+    ($body:expr) => {
+        $crate::__anyprobe_record!("__DATA,__anyprobe,regular,no_dead_strip", $body);
+    };
+}
+
+/// The registry section of the executable or library this is linked into,
+/// bounded by the `section$start` and `section$end` symbols ld64 defines.
+pub(crate) fn registry_section() -> &'static [u8] {
+    // Puts the section in every binary that calls this, so its bounds are
+    // defined even with no probes. The parser skips zero bytes.
+    #[used]
+    #[unsafe(link_section = "__DATA,__anyprobe,regular,no_dead_strip")]
+    static PAD: [u8; 1] = [0];
+
+    unsafe extern "C" {
+        // `\x01`: the name as written, without the `_` prefix C symbols get.
+        #[link_name = "\x01section$start$__DATA$__anyprobe"]
+        static START: u8;
+        #[link_name = "\x01section$end$__DATA$__anyprobe"]
+        static END: u8;
+    }
+    let start = &raw const START;
+    let end = &raw const END;
+    // SAFETY: ld64 sets `START` and `END` to the start and end of the
+    // section holding `PAD` and every record, so the range is one allocation
+    // of initialized bytes. Every byte belongs to an immutable `static`,
+    // never written, and lives for the whole program.
+    unsafe { core::slice::from_raw_parts(start, end as usize - start as usize) }
+}
+
 /// Defines one probe's symbols, `enabled` and `fire`. Called by `probes!`.
 #[doc(hidden)]
 #[macro_export]

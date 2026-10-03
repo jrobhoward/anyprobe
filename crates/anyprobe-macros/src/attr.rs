@@ -177,8 +177,12 @@ enum Shape {
     /// Passed as itself. `expr` evaluates, at the call site, to the value of
     /// the probe parameter's type.
     Native { kind: Kind, expr: TokenStream },
-    /// Passed as an encoded `Value`. `expr` builds it at the call site.
-    Encoded { expr: TokenStream },
+    /// Passed as an encoded `Value`. `expr` builds it at the call site;
+    /// `encoding` is its registry type (`json`, `debug` or `auto`).
+    Encoded {
+        expr: TokenStream,
+        encoding: &'static str,
+    },
 }
 
 fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
@@ -228,6 +232,10 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let entry_ident = format_ident!("__anyprobe_entry");
     let return_ident = format_ident!("__anyprobe_return");
     let unwind_ident = format_ident!("__anyprobe_unwind");
+    let site = Site {
+        function: func.sig.ident.unraw().to_string(),
+        span: func.sig.ident.span(),
+    };
     let (entry_probe, entry_helper, entry_call) = entry_parts(
         &provider,
         &entry_name,
@@ -235,11 +243,12 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
         &passed,
         collapse,
         is_async,
+        &site,
     );
     let (return_probe, return_helper, return_call) =
-        return_parts(&provider, &return_name, &return_ident, ret, is_async);
+        return_parts(&provider, &return_name, &return_ident, ret, is_async, &site);
     let (unwind_probe, unwind_helper) = if options.unwind.is_some() {
-        unwind_parts(&provider, &unwind_name, &unwind_ident, is_async)
+        unwind_parts(&provider, &unwind_name, &unwind_ident, is_async, &site)
     } else {
         (TokenStream::new(), TokenStream::new())
     };
@@ -535,9 +544,11 @@ fn collect_args(func: &ItemFn, options: &mut Options) -> syn::Result<Vec<Passed>
             Some(Mode::Skip) => continue,
             Some(Mode::Serde) => Shape::Encoded {
                 expr: quote_spanned!(listed_span=> ::anyprobe::__private::serde_value!(#lit, &#value)),
+                encoding: "json",
             },
             Some(Mode::Debug) => Shape::Encoded {
                 expr: quote_spanned!(listed_span=> ::anyprobe::__private::Value::debug(&#value)),
+                encoding: "debug",
             },
             Some(Mode::Native) => {
                 if is_self {
@@ -553,6 +564,7 @@ fn collect_args(func: &ItemFn, options: &mut Options) -> syn::Result<Vec<Passed>
             }
             None => native_shape(&ty, &value).unwrap_or_else(|| Shape::Encoded {
                 expr: quote_spanned!(ty.span()=> ::anyprobe::__private::unlisted!(#lit, &#value)),
+                encoding: "auto",
             }),
         };
         passed.push(Passed {
@@ -636,12 +648,23 @@ fn to_value(kind: Kind, v: &TokenStream) -> TokenStream {
     }
 }
 
-fn probe(args: Vec<Arg>, module: &Ident) -> Probe {
+/// What every probe of one function records in the registry besides its
+/// arguments: the function's name and where it is written.
+#[derive(Clone)]
+struct Site {
+    function: String,
+    span: Span,
+}
+
+fn probe(args: Vec<Arg>, module: &Ident, origin: &'static str, site: &Site) -> Probe {
     Probe {
         attrs: Vec::new(),
         vis: syn::parse_quote!(pub),
         name: module.clone(),
         args,
+        origin,
+        function: site.function.clone(),
+        span: site.span,
     }
 }
 
@@ -652,15 +675,18 @@ fn invocation_arg() -> Arg {
         field: "invocation".to_owned(),
         ty: quote!(u64),
         kind: Kind::Unsigned("u64"),
+        registry_type: "u64",
     }
 }
 
-fn str_arg(name: Ident, field: String) -> Arg {
+/// A string argument carrying a value encoded as `encoding`.
+fn str_arg(name: Ident, field: String, encoding: &'static str) -> Arg {
     Arg {
         name,
         field,
         ty: quote!(&str),
         kind: Kind::Str,
+        registry_type: encoding,
     }
 }
 
@@ -674,13 +700,15 @@ fn entry_parts(
     passed: &[Passed],
     collapse: bool,
     invocation: bool,
+    site: &Site,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let (args, helper, call) = if collapse {
         entry_collapsed(module, passed, invocation)
     } else {
         entry_separate(module, passed, invocation)
     };
-    (define(provider, name, probe(args, module)), helper, call)
+    let probe = probe(args, module, "entry", site);
+    (define(provider, name, probe), helper, call)
 }
 
 /// The invocation id's probe argument, helper parameter and call argument,
@@ -720,10 +748,10 @@ fn entry_collapsed(
     };
     let values = passed.iter().map(|p| match &p.shape {
         Shape::Native { kind, expr } => to_value(*kind, expr),
-        Shape::Encoded { expr } => expr.clone(),
+        Shape::Encoded { expr, .. } => expr.clone(),
     });
     let call = quote!(__anyprobe::fire_entry(#inv_arg #(#values),*););
-    args.push(str_arg(object, "args".to_owned()));
+    args.push(str_arg(object, "args".to_owned(), "object"));
     (args, helper, call)
 }
 
@@ -748,11 +776,12 @@ fn entry_separate(
                     field: p.field.clone(),
                     ty,
                     kind: *kind,
+                    registry_type: kind.registry_type(),
                 });
             }
-            Shape::Encoded { .. } => {
+            Shape::Encoded { encoding, .. } => {
                 helper_params.push(quote!(#param: #private::Value<'_>));
-                args.push(str_arg(param.clone(), p.field.clone()));
+                args.push(str_arg(param.clone(), p.field.clone(), encoding));
                 encoded.push(param);
             }
         }
@@ -772,7 +801,7 @@ fn entry_separate(
         }
     };
     let exprs = passed.iter().map(|p| match &p.shape {
-        Shape::Native { expr, .. } | Shape::Encoded { expr } => expr,
+        Shape::Native { expr, .. } | Shape::Encoded { expr, .. } => expr,
     });
     let call = quote!(__anyprobe::fire_entry(#inv_arg #(#exprs),*););
     (args, helper, call)
@@ -782,7 +811,8 @@ fn entry_separate(
 enum Ret {
     None,
     Native(Kind, TokenStream),
-    Encoded(TokenStream),
+    /// The value's expression and its registry type.
+    Encoded(TokenStream, &'static str),
 }
 
 fn return_shape(func: &ItemFn, ret: Option<(Mode, Span)>) -> syn::Result<Ret> {
@@ -807,12 +837,14 @@ fn return_shape(func: &ItemFn, ret: Option<(Mode, Span)>) -> syn::Result<Ret> {
                 quote_spanned!(ty.span()=> ::anyprobe::Native::to_u64(&#value)),
             ),
         },
-        Mode::Serde => {
-            Ret::Encoded(quote_spanned!(span=> ::anyprobe::__private::serde_value!("ret", &#value)))
-        }
-        Mode::Debug => {
-            Ret::Encoded(quote_spanned!(span=> ::anyprobe::__private::Value::debug(&#value)))
-        }
+        Mode::Serde => Ret::Encoded(
+            quote_spanned!(span=> ::anyprobe::__private::serde_value!("ret", &#value)),
+            "json",
+        ),
+        Mode::Debug => Ret::Encoded(
+            quote_spanned!(span=> ::anyprobe::__private::Value::debug(&#value)),
+            "debug",
+        ),
         Mode::Skip => Ret::None,
     })
 }
@@ -825,6 +857,7 @@ fn return_parts(
     module: &Ident,
     ret: Ret,
     invocation: bool,
+    site: &Site,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let private = quote!(::anyprobe::__private);
     let (mut args, inv_param, inv_arg) = invocation_parts(invocation);
@@ -844,14 +877,15 @@ fn return_parts(
                     field: "ret".to_owned(),
                     ty: ty.clone(),
                     kind,
+                    registry_type: kind.registry_type(),
                 }],
                 quote!(#r: #ty),
                 quote!(#module::fire(#inv_arg #r);),
                 expr,
             )
         }
-        Ret::Encoded(expr) => (
-            vec![str_arg(r.clone(), "ret".to_owned())],
+        Ret::Encoded(expr, encoding) => (
+            vec![str_arg(r.clone(), "ret".to_owned(), encoding)],
             quote!(#r: #private::Value<'_>),
             quote!(#private::encode::text([#r], |[#r]| #module::fire(#inv_arg #r));),
             expr,
@@ -866,7 +900,8 @@ fn return_parts(
         }
     };
     let call = quote!(__anyprobe::fire_return(#inv_arg #arg););
-    (define(provider, name, probe(args, module)), helper, call)
+    let probe = probe(args, module, "return", site);
+    (define(provider, name, probe), helper, call)
 }
 
 /// The unwind probe's module, and the guard whose drop fires it.
@@ -880,6 +915,7 @@ fn unwind_parts(
     name: &str,
     module: &Ident,
     invocation: bool,
+    site: &Site,
 ) -> (TokenStream, TokenStream) {
     let private = quote!(::anyprobe::__private);
     let (args, guard) = if invocation {
@@ -892,6 +928,7 @@ fn unwind_parts(
                     field: "panicking".to_owned(),
                     ty: quote!(bool),
                     kind: Kind::Bool,
+                    registry_type: "bool",
                 },
             ],
             quote! {
@@ -936,7 +973,8 @@ fn unwind_parts(
             },
         )
     };
-    (define(provider, name, probe(args, module)), guard)
+    let probe = probe(args, module, "unwind", site);
+    (define(provider, name, probe), guard)
 }
 
 /// The probe module for `probe`, named `module`, with probe name `name`.

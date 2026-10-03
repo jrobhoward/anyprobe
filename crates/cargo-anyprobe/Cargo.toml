@@ -1,0 +1,33 @@
+[package]
+name = "cargo-anyprobe"
+version = "0.1.0"
+description = "Lists the anyprobe probes in a binary and writes bpftrace, DTrace and WPR scripts for them"
+keywords = ["tracing", "usdt", "dtrace", "bpftrace", "etw"]
+categories = ["development-tools::cargo-plugins", "development-tools::debugging"]
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The registry parser. Exact, like anyprobe-macros: the record format belongs
+# to one anyprobe version, and a newer format is rejected rather than misread.
+anyprobe = { version = "=0.1.0", path = "../anyprobe", default-features = false }
+# DOF sections in macOS binaries, to check that a listed probe has sites.
+dof = { version = "0.4", default-features = false, features = ["des"] }
+# ELF, Mach-O and PE. Same version `dof` uses.
+goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "mach32", "mach64", "pe32", "pe64", "endian_fd"] }
+# Cargo's build messages, and `list --json`.
+serde_json = { version = "1.0.120", default-features = false, features = ["std"] }
+thiserror = "2.0.12"
+# `Guid::from_name`, the ETW provider GUID TraceLogging derives from a
+# provider name, for WPR profiles. Pure Rust on every host; no macros.
+tracelogging = { version = "1.2", default-features = false }
+
+[dev-dependencies]
+# `tests/cli.rs` defines probes and reads its own binary with the CLI.
+# `anyprobe` itself is a regular dependency, without default features.

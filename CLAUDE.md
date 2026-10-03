@@ -13,9 +13,10 @@ deferred indefinitely; it gets the no-op backend.
 
 The crate is pre-1.0. `docs/PLAN.md` holds the design, the phases and the
 open questions; read it before changing anything structural. Phases 1 (the
-`probes!` macro and the runtime) and 2 (the `#[probe]` attribute,
-`serde`/`debug` encoding and the `autoref` feature) are in place; phase 3
-adds `async fn`, `unwind` and `symbol`.
+`probes!` macro and the runtime), 2 (the `#[probe]` attribute,
+`serde`/`debug` encoding and the `autoref` feature) and 3 (`async fn`,
+`unwind`, `symbol`) are in place; phase 4 adds the probe registry
+(`anyprobe::list()`) and the `cargo-anyprobe` tool.
 
 ## Commands
 
@@ -103,14 +104,14 @@ done
 # SPIKE_ATTACH=0 runs only the checks that need no root; on macOS,
 # SPIKE_TARGET=x86_64-apple-darwin checks an Intel build.
 spike/scripts/attach-linux.sh            # bpftrace
-spike/scripts/attach-linux-attr.sh       # bpftrace on `#[probe]`: encodings, async, unwind, symbol
+spike/scripts/attach-linux-attr.sh       # bpftrace on `#[probe]`: encodings, async, unwind, symbol, cargo anyprobe
 spike/scripts/attach-linux-perf.sh       # perf probe + perf record (not in CI)
 # SystemTap (not in CI) needs file offsets equal to addresses, which rust-lld
 # does not produce by default; STAP picks a stap newer than the distro's.
 RUSTFLAGS="-C link-arg=-Wl,-z,separate-loadable-segments" \
   CARGO_TARGET_DIR=target/sep-seg spike/scripts/attach-linux-stap.sh
 spike/scripts/attach-macos.sh            # inspect_dof checks + sudo dtrace -c
-spike/scripts/attach-macos-attr.sh       # `#[probe]`: encodings, same-name, async, unwind, symbol
+spike/scripts/attach-macos-attr.sh       # `#[probe]`: encodings, same-name, async, unwind, symbol, cargo anyprobe
 sh spike/scripts/attach-freebsd.sh       # deferred: spike only, dtrace -p and -Z -c
 # Windows: elevated Windows PowerShell. Execution policy blocks unsigned
 # scripts by default, so pass Bypass for this one invocation (`pwsh` is not
@@ -121,7 +122,7 @@ sh spike/scripts/attach-freebsd.sh       # deferred: spike only, dtrace -p and -
 powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # logman + tracerpt
 $env:ATTACH_CRATE = 'anyprobe'
 powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows.ps1   # the `work` example
-powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows-attr.ps1   # `#[probe]`, every encoding
+powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows-attr.ps1   # `#[probe]`, every encoding, cargo anyprobe + wpr
 
 # Packaging, as the CI `package` job runs it. The verify step builds the
 # packaged crates as registry crates, and cargo assumes a registry crate of a
@@ -129,7 +130,7 @@ powershell -ExecutionPolicy Bypass -File spike\scripts\attach-windows-attr.ps1  
 # of the same version is reused, and verification fails on code that builds
 # (e.g. "no `probe` in the root"). CI starts clean; locally,
 # `cargo clean -p anyprobe-macros -p anyprobe` first.
-cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe
+cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe -p cargo-anyprobe
 
 # Supply chain — run before adding or updating any dependency. `advisories`
 # also runs weekly in CI, since the database changes with no commit here.
@@ -163,9 +164,17 @@ See `docs/PLAN.md` for the design. Summary a contributor needs day to day:
   `unsafe` live here, not in proc-macro output. `windows.rs` also holds the
   ETW provider runtime, which shares one registration per provider name
   across the process. `encode.rs` writes `serde`/`debug` values into a
-  thread-local buffer; `native.rs` is the public `Native` trait. The
+  thread-local buffer; `native.rs` is the public `Native` trait.
+  `registry.rs` holds the probe registry: the record format, the
+  `register!` support the backends forward to (each backend picks the
+  section), the parser and `list()`; `error.rs` its error type. The
   `serde`/`autoref` compile errors are `macro_rules!` in `lib.rs`, outside
   any backend, so they fire on every target.
+- `crates/cargo-anyprobe`: the `cargo anyprobe` binary. Reads the registry
+  section and the tracer metadata (SDT notes, DOF) from a built ELF, Mach-O
+  or PE file with `goblin` and `dof`, and writes the `list` output and the
+  bpftrace, D and WPR scripts. Its integration test reads its own test
+  binary, which defines probes.
 - `crates/anyprobe-check` (unpublished): one probe per argument kind, so a
   library build reaches every backend's codegen.
 - `spike/` (`anyprobe-spike`, unpublished): the phase-0 hand-written probes,
@@ -179,6 +188,14 @@ and LLVM's own duplication each copy an `asm!` block. Probe sites use numeric
 local labels (`990:` / `990b`), as `sys/sdt.h` does, so every copy is another
 site under the same probe name rather than a duplicate-symbol error. Do not
 introduce a named label in a probe site.
+
+**`.probes` starts on a page of its own.** The kernel raises a semaphore
+for perf and `bpftrace -c` by its file offset, in the first writable mapping
+of that file page. rust-lld packs the RELRO and data segments back to back
+in the file, so without the page-aligned byte each SDT site emits once per
+object, the semaphores can share a page with the RELRO segment and every
+probe stays off. `bpftrace -p` writes the semaphore itself and hides the
+bug. `attach-linux-attr.sh` checks the layout without root.
 
 **Probe sites that pass pointers are `readonly`, never `nomem`.** The tracer
 reads memory through the arguments at the site. Under `nomem` the compiler may
@@ -222,6 +239,15 @@ for the whole workspace, and `--no-default-features` then builds nothing
 without it. `anyprobe-check` mirrors the features instead. trybuild forwards
 only the features of the crate under test, which is why feature-dependent
 compile-fail cases live in `crates/anyprobe/tests/ui/`.
+
+**A registry record holds no pointers.** The same bytes are read by
+`list()` in the running program and by `cargo anyprobe` from a file on disk
+for any target, which works only because nothing in a record needs
+relocating. Each record is a `#[used]` static built by a `const fn` from a
+`concat!` the proc macro writes. A change to the record layout changes
+`registry::VERSION`, and the macros, the parser and `cargo-anyprobe` change
+with it; `cargo-anyprobe` depends on `anyprobe` with an exact version for
+that reason.
 
 **Exported symbols use `#[unsafe(export_name = ...)]`.** Edition 2024 rejects
 the bare form in generated code. The `symbol` option refuses generic fns,
@@ -279,8 +305,8 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
 - **licenses** and **advisories:** separate jobs. Advisories also runs on a
   weekly cron and builds once against freshly resolved dependencies
   (`cargo update`).
-- **package:** `cargo publish --locked --dry-run` for `anyprobe-macros` and
-  `anyprobe` together.
+- **package:** `cargo publish --locked --dry-run` for `anyprobe-macros`,
+  `anyprobe` and `cargo-anyprobe` together.
 - **semver:** `cargo-semver-checks`, skipped with a notice until a baseline
   exists on crates.io.
 - **fmt.**
@@ -332,7 +358,7 @@ Before considering any change complete:
   by symbol. Run
   the macOS scripts as yourself, not under `sudo`: they call `sudo` for dtrace only, and cargo run as root
   leaves root-owned files in `target/`
-- `cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe` passes
+- `cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe -p cargo-anyprobe` passes
 
 ## Docs are part of "done"
 

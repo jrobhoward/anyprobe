@@ -50,6 +50,11 @@
 //! # handle(1, "/");
 //! ```
 //!
+//! [`list`] returns every probe compiled into the binary, with its arguments
+//! and where it is defined (see [`registry`]). The `cargo-anyprobe` tool
+//! reads the same description from a built binary and writes bpftrace, D
+//! and WPR scripts for it.
+//!
 //! Attaching on each platform, for the example above:
 //!
 //! ```text
@@ -73,12 +78,16 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub use anyprobe_macros::{probe, probes};
+pub use error::RegistryError;
 pub use native::Native;
+pub use registry::list;
 
 // Public only so `__private` can re-export it.
 #[doc(hidden)]
 pub mod encode;
+mod error;
 mod native;
+pub mod registry;
 
 #[cfg(all(
     target_os = "linux",
@@ -122,6 +131,7 @@ struct ReadmeDoctests;
 #[doc(hidden)]
 pub mod __private {
     pub use crate::__anyprobe_define_probe as define_probe;
+    pub use crate::__anyprobe_register as register;
     pub use crate::__anyprobe_serde_value as serde_value;
     pub use crate::__anyprobe_unlisted as unlisted;
     pub use crate::encode::{self, Value};

@@ -4,6 +4,7 @@ members = [
     "crates/anyprobe",
     "crates/anyprobe-macros",
     "crates/anyprobe-check",
+    "crates/cargo-anyprobe",
     "spike",
 ]
 

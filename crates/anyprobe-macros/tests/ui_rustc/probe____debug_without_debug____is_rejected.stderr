@@ -1,4 +1,4 @@
-error[E0277]: `Opts` doesn't implement `Debug`
+error[E0277]: `Opts` doesn't implement `std::fmt::Debug`
  --> tests/ui_rustc/probe____debug_without_debug____is_rejected.rs:3:41
   |
 3 |   #[anyprobe::probe(provider = "t", debug(opts))]
@@ -7,7 +7,7 @@ error[E0277]: `Opts` doesn't implement `Debug`
   |  _________________________________________required by a bound introduced by this call
   | |
 4 | | fn hit(opts: Opts) {}
-  | |___________^ the trait `Debug` is not implemented for `Opts`
+  | |___________^ the trait `std::fmt::Debug` is not implemented for `Opts`
   |
 note: required by a bound in `anyprobe::encode::Value::<'a>::debug`
  --> $WORKSPACE/crates/anyprobe/src/encode.rs

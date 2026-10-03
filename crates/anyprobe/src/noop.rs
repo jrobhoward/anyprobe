@@ -3,6 +3,18 @@
 
 pub(crate) const NAME: &str = "noop";
 
+/// Registry records: none on this target. Called by `probes!`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_register {
+    ($body:expr) => {};
+}
+
+/// The registry section: empty on this target.
+pub(crate) fn registry_section() -> &'static [u8] {
+    &[]
+}
+
 /// Defines one probe as a no-op. Called by `probes!`.
 #[doc(hidden)]
 #[macro_export]

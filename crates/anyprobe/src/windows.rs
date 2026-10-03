@@ -16,6 +16,37 @@
 
 pub(crate) const NAME: &str = "windows-etw";
 
+/// Emits a probe's registry record. Called by `probes!`. The linker sorts
+/// grouped sections by the text after `$`, so records land between the
+/// markers in `.aprobe$a` and `.aprobe$c`, and the image has one `.aprobe`
+/// section.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_register {
+    ($body:expr) => {
+        $crate::__anyprobe_record!(".aprobe$b", $body);
+    };
+}
+
+/// The registry records of the executable or library this is linked into.
+pub(crate) fn registry_section() -> &'static [u8] {
+    #[used]
+    #[unsafe(link_section = ".aprobe$a")]
+    static START: [u8; 0] = [];
+    #[used]
+    #[unsafe(link_section = ".aprobe$c")]
+    static END: [u8; 0] = [];
+
+    let start = START.as_ptr();
+    let end = END.as_ptr();
+    // SAFETY: the linker places `.aprobe$a`, every `.aprobe$b` record and
+    // `.aprobe$c` in that order in one section, so the bytes between the two
+    // markers are the records and any zero padding between them: one
+    // allocation of initialized bytes. Every byte belongs to an immutable
+    // `static`, never written, and lives for the whole program.
+    unsafe { core::slice::from_raw_parts(start, end as usize - start as usize) }
+}
+
 /// Defines one probe's `enabled` and `fire`. Called by `probes!`.
 #[doc(hidden)]
 #[macro_export]

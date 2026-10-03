@@ -119,6 +119,19 @@ impl Kind {
         }
     }
 
+    /// The argument's type in the probe registry: how its value reaches the
+    /// tracer. Integers keep their Rust width, which ETW uses.
+    pub(crate) fn registry_type(self) -> &'static str {
+        match self {
+            Kind::Unsigned(n) | Kind::Signed(n) => n,
+            Kind::Bool => "bool",
+            Kind::Char => "char",
+            Kind::Pointer => "ptr",
+            Kind::Str => "str",
+            Kind::Bytes => "bytes",
+        }
+    }
+
     /// The `tracelogging_dynamic::EventBuilder` method, value expression and
     /// `OutType` variant for the argument's one ETW field.
     pub(crate) fn etw_field(self, arg: &Ident) -> (&'static str, TokenStream, &'static str) {

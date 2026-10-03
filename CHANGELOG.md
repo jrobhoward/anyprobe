@@ -8,6 +8,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `anyprobe::list()` and the `registry` module: every probe in the binary,
+  with its provider, name, arguments and their types, and the file and line
+  that define it. The macros write each description into a section of the
+  binary at compile time; nothing runs at startup. `registry::parse` reads
+  the same section from a file.
+- `cargo-anyprobe`: `cargo anyprobe list` lists the probes in a built binary
+  for any target without running it, warns when one probe name has
+  different arguments in different functions, and marks probes whose code
+  the linker removed (Linux and macOS). `bpftrace`, `dtrace` and `wprp`
+  write a bpftrace script, a D script and a WPR profile for them.
 - `#[probe]` on `async fn`: the entry probe fires when the body starts, the
   return probe when it completes, and both pass an invocation id first so a
   tracer can pair them across interleaved calls.
@@ -41,3 +51,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Windows: ETW TraceLogging events; the provider registers with ETW on the
   first enabled check of any of its probes.
 - Every other target, FreeBSD included: probes compile to nothing.
+
+### Fixed
+
+- Linux: probes could stay off under perf and `bpftrace -c`, depending on
+  how rust-lld laid out the binary. The kernel raises a semaphore by its file
+  offset, and when the page holding the semaphores was also the last page of
+  the RELRO segment, it raised a copy the program never reads. The
+  semaphores' section now starts on a page of its own (4 KiB on x86-64,
+  64 KiB on AArch64), at the cost of up to that much padding. `bpftrace -p`
+  was not affected.

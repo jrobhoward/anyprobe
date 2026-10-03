@@ -11,6 +11,39 @@
 
 pub(crate) const NAME: &str = "linux-sdt";
 
+/// Emits a probe's registry record. Called by `probes!`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __anyprobe_register {
+    ($body:expr) => {
+        $crate::__anyprobe_record!("anyprobe_probes", $body);
+    };
+}
+
+/// The registry section of the executable or library this is linked into.
+/// Its name is a C identifier, so the linker defines `__start_` and `__stop_`
+/// symbols at its bounds.
+pub(crate) fn registry_section() -> &'static [u8] {
+    // Puts the section in every binary that calls this, so its bounds are
+    // defined even with no probes. The parser skips zero bytes.
+    #[used]
+    #[unsafe(link_section = "anyprobe_probes")]
+    static PAD: [u8; 1] = [0];
+
+    unsafe extern "C" {
+        static __start_anyprobe_probes: u8;
+        static __stop_anyprobe_probes: u8;
+    }
+    let start = &raw const __start_anyprobe_probes;
+    let stop = &raw const __stop_anyprobe_probes;
+    // SAFETY: the linker sets `__start_anyprobe_probes` and
+    // `__stop_anyprobe_probes` to the start and end of the section holding
+    // `PAD` and every record, so the range is one allocation of initialized
+    // bytes. Every byte belongs to an immutable `static`, never written, and
+    // lives for the whole program.
+    unsafe { core::slice::from_raw_parts(start, stop as usize - start as usize) }
+}
+
 /// Defines one probe's semaphore, `enabled` and `fire`. Called by `probes!`.
 #[doc(hidden)]
 #[macro_export]
@@ -52,12 +85,24 @@ macro_rules! __anyprobe_define_probe {
 
 /// Emits one SDT probe site: the `nop` the tracer patches, the note that
 /// describes it, and (once per object) the `.stapsdt.base` section tools use
-/// to detect prelink adjustments.
+/// to detect prelink adjustments and the byte that page-aligns `.probes`.
 ///
 /// Labels are numeric local labels so that every copy of the block, from
 /// inlining or monomorphization, assembles to another site rather than a
-/// duplicate symbol. `_.stapsdt.base` is the one named symbol, guarded by
-/// `.ifndef`.
+/// duplicate symbol. `_.stapsdt.base` and `_.anyprobe.probes_page` are the
+/// named symbols, each guarded by `.ifndef` and deduplicated across objects
+/// as a comdat group.
+///
+/// `.probes` starts on a page of its own (4 KiB on x86-64; 64 KiB on AArch64,
+/// whose kernels may use 64 KiB pages). The kernel raises a semaphore for
+/// `bpftrace -c` and perf by its file offset, in the first writable mapping of
+/// that file page. rust-lld packs the RELRO segment and the data segment
+/// into the file back to back, so the page holding `.probes` can also be the
+/// last page of the RELRO segment, mapped at another address: the kernel then
+/// raised a copy the program never reads, and every probe stayed off. One
+/// retained, page-aligned byte in `.probes` raises the whole output section's
+/// alignment, so no other segment maps its first page. It costs up to a page
+/// of padding.
 ///
 /// `.stapsdt.base` is executable (`"axGR"`, where `sys/sdt.h` uses `"aG"`) so
 /// that it lands in the same segment as the probe sites. perf turns a site's
@@ -99,6 +144,15 @@ macro_rules! __anyprobe_sdt_site {
                 ".hidden _.stapsdt.base",
                 "_.stapsdt.base: .space 1",
                 ".size _.stapsdt.base, 1",
+                ".popsection",
+                ".endif",
+                ".ifndef _.anyprobe.probes_page",
+                ".pushsection .probes, \"awGR\", \"progbits\", _.anyprobe.probes_page, comdat",
+                ".balign 4096",
+                ".weak _.anyprobe.probes_page",
+                ".hidden _.anyprobe.probes_page",
+                "_.anyprobe.probes_page: .space 1",
+                ".size _.anyprobe.probes_page, 1",
                 ".popsection",
                 ".endif",
                 sema = sym $sema,
@@ -143,6 +197,15 @@ macro_rules! __anyprobe_sdt_site {
                 ".hidden _.stapsdt.base",
                 "_.stapsdt.base: .space 1",
                 ".size _.stapsdt.base, 1",
+                ".popsection",
+                ".endif",
+                ".ifndef _.anyprobe.probes_page",
+                ".pushsection .probes, \"awGR\", \"progbits\", _.anyprobe.probes_page, comdat",
+                ".balign 65536",
+                ".weak _.anyprobe.probes_page",
+                ".hidden _.anyprobe.probes_page",
+                "_.anyprobe.probes_page: .space 1",
+                ".size _.anyprobe.probes_page, 1",
                 ".popsection",
                 ".endif",
                 sema = sym $sema,

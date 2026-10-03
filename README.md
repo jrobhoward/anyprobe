@@ -119,6 +119,29 @@ gdb read it as a NUL-terminated string. Encoded values are cut at 4096
 bytes, and bpftrace reads 64 by default (`BPFTRACE_MAX_STRLEN`). A native
 `&str` has no NUL after it, so perf and gdb do not read one correctly.
 
+## Listing probes
+
+Each probe is also described in a section of the binary: provider, name,
+arguments and their types, and the file and line that define it.
+`anyprobe::list()` reads the description from the running program.
+`cargo anyprobe` reads it from a built binary for any target, without running
+it, and writes tracer scripts that print every probe with its arguments
+decoded:
+
+```text
+cargo install cargo-anyprobe
+cargo anyprobe list --bin myapp --release
+cargo anyprobe bpftrace target/release/myapp > myapp.bt      # sudo bpftrace -p PID myapp.bt
+cargo anyprobe dtrace --bin myapp --release > myapp.d        # sudo dtrace -p PID -s myapp.d
+cargo anyprobe wprp target/release/myapp.exe > myapp.wprp    # wpr -start myapp.wprp -filemode
+```
+
+`--provider` and `--probe 'fetch__*'` select probes, and `list --json` gives
+one object per definition. The linker can drop the code of a function nothing
+calls and keep its description; on Linux and macOS `list` marks such a probe
+and the scripts leave it out. Windows binaries have no per-site metadata to
+check against.
+
 ## Caveats
 
 - `#[probe]` runs the function's body in a closure, or an awaited `async`
@@ -129,7 +152,11 @@ bytes, and bpftrace reads 64 by default (`BPFTRACE_MAX_STRLEN`). A native
   probe names unless one sets `name = "..."`. If their arguments differ,
   each site still passes its own; with dtrace a script tells them apart by
   the function it reports (`probefunc`). Nobody has tried this with bpftrace
-  yet.
+  yet. `cargo anyprobe list` warns about such probes, and its scripts print
+  no arguments for them.
+- `anyprobe::list()` reads the executable or library it is linked into, not
+  shared libraries loaded alongside it. Each probe's description takes
+  about 150 bytes, most of it the source file path and module path.
 
 - macOS: `sudo dtrace` attaches with System Integrity Protection on, for
   binaries that are not signed with the hardened runtime.
