@@ -167,10 +167,15 @@ cargo bench -p anyprobe-bench --bench spike_disabled_cost
 
 # Packaging, as the CI `package` job runs it. The verify step builds the
 # packaged crates as registry crates, and cargo assumes a registry crate of a
-# given version never changes: a build left in `target/` by an earlier dry run
-# of the same version is reused, and verification fails on code that builds
-# (e.g. "no `probe` in the root"). CI starts clean; locally,
-# `cargo clean -p anyprobe-macros -p anyprobe` first.
+# given version never changes. An earlier dry run of the same version leaves
+# two copies that are reused: the build in `target/`, and the crate sources
+# extracted under `$CARGO_HOME/registry/src/-<hash>/` (the leading `-` marks
+# the dry run's local registry; crates.io's directories start with `index.`).
+# Verification then fails on code that builds ("no `probe` in the root", or
+# errors in lines the working tree no longer has). CI starts clean; locally,
+# remove both first.
+cargo clean -p anyprobe-macros -p anyprobe
+rm -rf "${CARGO_HOME:-$HOME/.cargo}"/registry/src/-*/anyprobe*
 cargo publish --locked --dry-run -p anyprobe-macros -p anyprobe -p cargo-anyprobe
 
 # Supply chain — run before adding or updating any dependency. `advisories`
