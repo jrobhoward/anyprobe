@@ -16,7 +16,9 @@
 #   - `anyprobe-check`'s `gc_sections` example, which never calls most of
 #     the library's probed functions, has every SDT note on a `nop`: a
 #     function `--gc-sections` collected must not leave a note naming an
-#     address outside the code;
+#     address outside the code; its `foreign:site` note, written with the
+#     flags of `sys/sdt.h` and the `usdt` crate in the same object as
+#     anyprobe's sites, is in the binary too;
 #   - in both examples, `.probes` starts a page that no other writable
 #     segment maps (the kernel raises semaphores by file offset, for
 #     `bpftrace -c` and perf, in the first writable mapping of the page);
@@ -140,6 +142,8 @@ for profile in "$@"; do
   expect "attr_async: every SDT note on a nop ($sites)" test "$sites" = ok
   sites=$(notes_on_nops "$PWD/target/$profile/examples/gc_sections")
   expect "gc_sections: every SDT note on a nop ($sites)" test "$sites" = ok
+  expect "gc_sections: sys/sdt.h-style note beside anyprobe's" \
+    bash -c "readelf -nW '$PWD/target/$profile/examples/gc_sections' | grep -qE 'Provider: foreign\$'"
   expect "attr_async: symbol exported as attr_async__exported" \
     bash -c "readelf -sW '$async' | grep -qE ' FUNC +GLOBAL +DEFAULT +[0-9]+ attr_async__exported\$'"
 

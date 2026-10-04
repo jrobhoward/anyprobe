@@ -21,7 +21,8 @@ documentation as of October 2026; check each project for changes.
 ## `usdt`
 
 [`usdt`](https://github.com/oxidecomputer/usdt) (Oxide Computer, Apache-2.0)
-is the closest alternative. Probes are declared in a D provider file, read
+is the closest alternative. Its latest release is 0.6.0 (September 2025).
+Probes are declared in a D provider file, read
 by a build script or the `dtrace_provider!` macro, or as function signatures
 in a module under `#[usdt::provider]`. Each probe is fired with a macro that
 takes a closure, which runs only when the probe is enabled. anyprobe's
@@ -33,6 +34,8 @@ takes a closure, which runs only when the probe is enabled. anyprobe's
   nothing on illumos. On FreeBSD x86-64 it also builds DOF (with the `dof`
   crate from the `usdt` project) and registers it from a constructor, with no
   call in the program; `anyprobe::registration()` reports the result.
+  `usdt` 0.6.0 does not compile on FreeBSD AArch64 (issue #545); the fix
+  (#546) is on its main branch.
 - On macOS it runs the system's `dtrace -h` while the macro expands, so
   building needs `dtrace` on the host. anyprobe writes the linker symbols
   itself and builds without it, which also allows cross-compiling to macOS.
@@ -53,13 +56,27 @@ takes a closure, which runs only when the probe is enabled. anyprobe's
 - On Linux, a probe in a function the linker removes under `--gc-sections`
   leaves an SDT note behind that names an invalid address (issue #498,
   open). anyprobe retains the notes, which keeps the function.
+- On Linux the two can be linked into one program, including a `usdt` site
+  inlined next to an anyprobe site. Both sets of probes share one
+  `.stapsdt.base`, whose flags come from the first object that defines it;
+  [GAPS.md](GAPS.md#other-sdt-probes-in-one-binary) says what that changes
+  for perf.
+- With no tracer attached, on Linux x86-64 (rustc 1.99, `usdt` 0.6.0), a
+  function with two probes passing `(u64, &str)` and `(u64, u32)` compiled
+  to 12 instructions with anyprobe: per probe, a PC-relative load of the
+  semaphore, a compare, and a branch around a `nop`. With `usdt` the same
+  function saved six registers and reserved a 72-byte stack frame before
+  its first check, and loaded each semaphore's address through the GOT
+  first. The string copy runs inline in the function; its issue #490
+  (open) proposes moving that work out of line.
 - `usdt` takes at most six arguments per probe; its issue #62 reports the
   sixth reading as 0 on Apple Silicon. anyprobe takes five values, where a
   `&str` or an encoded argument counts as two, and collapses a longer
   argument list into one JSON object.
 
 A program that needs illumos, or FreeBSD on another architecture than
-x86-64, or already has D provider files, fits `usdt`. One that needs Windows, or entry and return probes on many
+x86-64 (on AArch64, once a release has the fix for issue #545), or already
+has D provider files, fits `usdt`. One that needs Windows, or entry and return probes on many
 functions, fits anyprobe.
 
 ## `probe`

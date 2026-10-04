@@ -125,7 +125,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the code. The notes are now retained, which keeps the function in
   the binary as GNU ld already did: a library whose probed functions were
   all unused grew by 19.5 KB in the fixture that checks this. The same
-  problem is open in the `usdt` crate as issue #498.
+  problem is open in the `usdt` crate as issue #498. The `usdt` and `probe`
+  crates and `sys/sdt.h` write their notes without the retained flag, so
+  anyprobe's notes are a section of their own in each object, and an
+  inlined site of theirs next to an anyprobe site still assembles.
 - macOS: a provider or probe named after a word D reserves, such as `int`,
   `string` or `uint64_t`, failed to link with "Could not compile
   reconstructed dtrace script". `probes!` and `#[probe]` now reject these

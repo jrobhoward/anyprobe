@@ -70,7 +70,11 @@ the semaphores off the RELRO page. The notes are retained, so `--gc-sections`
 keeps every function with a probe site rather than collecting it and leaving
 a note that names an address outside the code. `SHF_LINK_ORDER` would drop the
 note with the function instead, but needs a named label, which a site cannot
-have. Sites that pass pointers are `readonly`,
+have. Other SDT emitters (`sys/sdt.h`, the `usdt` and `probe` crates) write
+the note section without the retained flag, and the assembler rejects one
+section with two sets of flags, so anyprobe's notes carry a unique section id
+and stay a separate section in the object; the linker merges both into one
+`.note.stapsdt`. Sites that pass pointers are `readonly`,
 never `nomem`, since the tracer reads memory through them.
 
 ### macOS

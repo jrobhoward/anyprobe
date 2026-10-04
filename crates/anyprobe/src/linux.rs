@@ -126,6 +126,13 @@ macro_rules! __anyprobe_define_probe {
 /// (`"o"`) would drop the note with the function instead, but it needs a
 /// named symbol in the function's section, and sites use numeric labels only.
 ///
+/// The note section also carries `unique, 1`. The `usdt` and `probe` crates
+/// and `sys/sdt.h` emit `.note.stapsdt` with no flags, and an inlined site of
+/// theirs can share an object with an anyprobe site; the assembler rejects
+/// one section with two sets of flags. A unique id makes anyprobe's notes a
+/// section of their own in the object, and the linker merges both into one
+/// `.note.stapsdt` in the output, where tracers find them by name.
+///
 /// Each site also carries a `NONE` relocation against
 /// `__start_anyprobe_probes`, which emits no code. rustc 1.88, the MSRV, does
 /// not mark a `#[used]` static as retained (1.99 does), and GNU ld under
@@ -152,7 +159,7 @@ macro_rules! __anyprobe_sdt_site {
                 "990: nop",
                 ".weak __start_anyprobe_probes",
                 ".reloc 990b, BFD_RELOC_NONE, __start_anyprobe_probes",
-                ".pushsection .note.stapsdt, \"R\", \"note\"",
+                ".pushsection .note.stapsdt, \"R\", \"note\", unique, 1",
                 ".balign 4",
                 ".4byte 992f-991f, 994f-993f, 3",
                 "991: .asciz \"stapsdt\"",
@@ -207,7 +214,7 @@ macro_rules! __anyprobe_sdt_site {
                 "990: nop",
                 ".weak __start_anyprobe_probes",
                 ".reloc 990b, BFD_RELOC_NONE, __start_anyprobe_probes",
-                ".pushsection .note.stapsdt, \"R\", \"note\"",
+                ".pushsection .note.stapsdt, \"R\", \"note\", unique, 1",
                 ".balign 4",
                 ".4byte 992f-991f, 994f-993f, 3",
                 "991: .asciz \"stapsdt\"",

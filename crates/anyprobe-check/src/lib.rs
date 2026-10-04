@@ -49,6 +49,53 @@ pub fn fire_all(text: &str, bytes: &[u8]) {
     if optional::enabled() {
         optional::fire(Some(text), None, c"label");
     }
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    foreign_sdt_site();
+}
+
+/// An SDT site written as `sys/sdt.h`, the `usdt` crate and the `probe` crate
+/// write theirs: `.note.stapsdt` with no flags, `.stapsdt.base` as `"aG"`, no
+/// semaphore and no arguments. Inlined into [`fire_all`], so it shares an
+/// object with anyprobe's sites, which carry other flags on the same section
+/// names; the assembler rejects that unless the sections stay apart.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[inline(always)]
+fn foreign_sdt_site() {
+    // SAFETY: the block executes a single `nop` and otherwise only emits data
+    // into non-executed sections. It has no operands.
+    unsafe {
+        core::arch::asm!(
+            "990: nop",
+            ".pushsection .note.stapsdt, \"\", \"note\"",
+            ".balign 4",
+            ".4byte 992f-991f, 994f-993f, 3",
+            "991: .asciz \"stapsdt\"",
+            "992: .balign 4",
+            "993: .8byte 990b",
+            ".8byte _.stapsdt.base",
+            ".8byte 0",
+            ".asciz \"foreign\"",
+            ".asciz \"site\"",
+            ".asciz \"\"",
+            "994: .balign 4",
+            ".popsection",
+            ".ifndef _.stapsdt.base",
+            ".pushsection .stapsdt.base, \"aG\", \"progbits\", .stapsdt.base, comdat",
+            ".weak _.stapsdt.base",
+            ".hidden _.stapsdt.base",
+            "_.stapsdt.base: .space 1",
+            ".size _.stapsdt.base, 1",
+            ".popsection",
+            ".endif",
+            options(nomem, nostack, preserves_flags),
+        );
+    }
 }
 
 /// Whether any probe here is enabled.

@@ -5,7 +5,13 @@
 //! below that an expansion trips fails that gate. The `usdt` crate's
 //! expansions trip `clippy::cast_lossless` in callers (its issues #240 and
 //! #270); this keeps anyprobe's from doing the same.
+//!
+//! `unused` is denied, so `cargo test` fails on it too: a body nested as a
+//! block inside generated code trips `unused_braces`, but only when the
+//! function is written on one line, which rustfmt never produces. The
+//! one-line functions below keep that shape under `#[rustfmt::skip]`.
 
+#![deny(unused)]
 #![warn(clippy::pedantic, clippy::nursery, clippy::cast_lossless)]
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
@@ -48,6 +54,49 @@ fn attributed(id: u32, small: u8, text: &str, opts: &Opts, name: Option<&str>) -
 #[anyprobe::probe(provider = "anyprobe_lints", unwind)]
 async fn attributed_async(id: u64) -> u64 {
     id
+}
+
+#[rustfmt::skip]
+#[anyprobe::probe(provider = "anyprobe_lints", ret = native)]
+async fn one_line_async(id: u64) -> u64 { id }
+
+#[rustfmt::skip]
+#[anyprobe::probe(provider = "anyprobe_lints")]
+async fn one_line_async_opaque(id: u64) -> impl std::fmt::Debug { id }
+
+#[rustfmt::skip]
+#[anyprobe::probe(provider = "anyprobe_lints")]
+async fn one_line_async_unit() {}
+
+/// # Safety
+///
+/// None needed; `unsafe` only changes how the body is wrapped.
+#[rustfmt::skip]
+#[anyprobe::probe(provider = "anyprobe_lints", ret = native)]
+async unsafe fn one_line_async_unsafe(id: u64) -> u64 { id }
+
+#[rustfmt::skip]
+#[anyprobe::probe(provider = "anyprobe_lints", ret = native)]
+fn one_line(id: u64) -> u64 { id }
+
+#[rustfmt::skip]
+#[anyprobe::probe(provider = "anyprobe_lints")]
+fn one_line_opaque(id: u64) -> impl std::fmt::Debug { id }
+
+#[rustfmt::skip]
+#[anyprobe::probe(provider = "anyprobe_lints")]
+fn one_line_unit() {}
+
+#[test]
+fn probe____one_line_bodies____compile_cleanly() {
+    drop(one_line_async(1));
+    drop(one_line_async_opaque(1));
+    drop(one_line_async_unit());
+    // SAFETY: the function has no safety requirements.
+    drop(unsafe { one_line_async_unsafe(1) });
+    assert_eq!(one_line(1), 1);
+    drop(one_line_opaque(1));
+    one_line_unit();
 }
 
 #[test]

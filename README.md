@@ -16,6 +16,33 @@ attached, a probe costs one enabled check and its arguments are not computed.
 
 Status: pre-release.
 
+## Installation
+
+```sh
+cargo add anyprobe
+```
+
+Features:
+
+- `serde` (default): the `serde(..)` encoding in `#[probe]`, as JSON. Adds
+  `serde` and `serde_json` to the build.
+- `autoref`: arguments `#[probe]` does not list are encoded as JSON or with
+  `{:?}` instead of being a compile error. Implies `serde`.
+
+A library crate depends on anyprobe without the defaults, and turns `serde`
+on only if it uses `serde(..)`:
+
+```toml
+[dependencies]
+anyprobe = { version = "0.9", default-features = false }
+```
+
+Cargo unifies features across the dependency graph, so a library that takes
+the defaults turns `serde` on in every program that uses it. A library's
+probe names and arguments are what tracing scripts attach to; renaming a
+probe or changing its arguments breaks those scripts, as changing a public
+function breaks its callers.
+
 ## Example
 
 `#[anyprobe::probe]` probes a function's entry and return:

@@ -318,6 +318,15 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
             },
             _ => TokenStream::new(),
         };
+        // The body's statements go into the block itself: nested as a block,
+        // a body that is one expression (`{ x }`) trips `unused_braces` in
+        // the caller's crate.
+        let stmts = &block.stmts;
+        let body = if sig.unsafety.is_some() {
+            quote!(unsafe { #(#stmts)* })
+        } else {
+            quote!(#(#stmts)*)
+        };
         quote! {
             #start
             #guard

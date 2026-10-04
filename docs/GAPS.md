@@ -293,6 +293,22 @@ the probes after it are not listed. On Windows each version registers its
 own copy of a provider name, and both count against the per-process limit.
 Only one record format exists so far.
 
+### Other SDT probes in one binary
+
+On Linux a binary can hold anyprobe probes and SDT probes from the `usdt` or
+`probe` crates or from C code that uses `sys/sdt.h`, and both sets are in
+its `.note.stapsdt`. Every note in the binary refers to one `.stapsdt.base`
+byte, and the first object in link order that defines it sets its flags.
+anyprobe's is executable; the others' are not. When another crate's comes
+first, rust-lld places the base in a read-only segment while the probe sites
+are in the executable one, the layout in which perf has been seen to put
+every probe 0x1000 bytes from its `nop`. That would apply to anyprobe's
+probes and the other crate's alike. A binary with `usdt` in the main crate
+and anyprobe in a dependency was checked to get that layout; nobody has
+attached perf to it yet. bpftrace does not use the base that way. anyprobe
+cannot change the outcome from its side: tracers find the base by section
+name, and the linker keeps one `.stapsdt.base`.
+
 ## Panics
 
 ### A panicking encoder

@@ -234,7 +234,11 @@ bug. `attach-linux-attr.sh` checks the layout without root.
 `--gc-sections` keeps it even when it collects the function holding the site,
 and rust-lld then writes an address in the ELF header into the note. The
 retained flag keeps the function instead. `attach-linux-attr.sh` checks it
-without root on `anyprobe-check`'s `gc_sections` example.
+without root on `anyprobe-check`'s `gc_sections` example. The section also
+carries `unique, 1`: `sys/sdt.h`, `usdt` and `probe` emit it with no flags,
+and without a unique id an inlined site of theirs in the same object fails
+to assemble. `anyprobe-check`'s `fire_all` holds such a site, so the
+`build --lib` loop catches a regression.
 
 **Probe sites that pass pointers are `readonly`, never `nomem`.** The tracer
 reads memory through the arguments at the site. Under `nomem` the compiler may
