@@ -94,6 +94,17 @@ for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
     --all-targets --target-dir target/cfg-dylib -- -Dwarnings || break
 done
 
+# `--cfg anyprobe_noop` selects the no-op backend on every target, for a
+# program that wants no probes from the libraries it uses. Tests on the host,
+# clippy on every target.
+RUSTFLAGS="--cfg anyprobe_noop" cargo test --workspace --target-dir target/cfg-noop
+for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+         x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
+         aarch64-pc-windows-msvc; do
+  RUSTFLAGS="--cfg anyprobe_noop" cargo clippy --workspace --target $t \
+    --all-targets --target-dir target/cfg-noop -- -Dwarnings || break
+done
+
 # Attach checks, one per OS: build, attach the native tracer, and print
 # ok/FAIL per check. The CI jobs run the same scripts. They check the spike by
 # default; ATTACH_CRATE=anyprobe checks the anyprobe crate's `work` example,
@@ -188,7 +199,9 @@ See `docs/ARCHITECTURE.md` for the design. Summary a contributor needs day to da
   `crates/anyprobe/tests/ui/`.
 - `crates/anyprobe`: the facade and runtime. One `cfg`-selected backend module
   per platform (`linux.rs`, `macos.rs`, `freebsd.rs`, `windows.rs`,
-  `noop.rs`), each defining the `macro_rules!` that `define_probe!` resolves
+  `noop.rs`; `--cfg anyprobe_noop` picks `noop.rs` on every target, so a
+  new `cfg`-gated item tied to a real backend carries `not(anyprobe_noop)`),
+  each defining the `macro_rules!` that `define_probe!` resolves
   to. All `asm!` and `unsafe` live here, not in proc-macro output.
   `windows.rs` also holds the ETW provider runtime, which shares one
   registration per provider name across the process. `freebsd.rs` holds the
@@ -352,7 +365,8 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
   `attach-freebsd-attr.sh`. It fails the workflow like the other attach
   jobs.
 - **cross-check:** every target with `--all-targets`, plus `build --lib` per
-  target for the `asm!` templates.
+  target for the `asm!` templates, and the `anyprobe_dylib` and
+  `anyprobe_noop` cfgs.
 - **probe attach:** each OS attaches with the native tool where the runner
   allows it, for both the spike and the anyprobe `work` example. Linux uses
   bpftrace under sudo and Windows an ETW session as admin. macOS runners have

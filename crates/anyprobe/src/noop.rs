@@ -1,5 +1,6 @@
-//! Targets with no supported tracer: probes compile to
-//! nothing, `enabled()` is `false` and `fire` does nothing.
+//! Targets with no supported tracer, and every target under
+//! `--cfg anyprobe_noop`: probes compile to nothing, `enabled()` is `false`
+//! and `fire` does nothing.
 
 pub(crate) const NAME: &str = "noop";
 

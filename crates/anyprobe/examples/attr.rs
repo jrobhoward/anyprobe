@@ -81,7 +81,7 @@ fn main() {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "pid={}", std::process::id());
     let _ = writeln!(out, "backend={}", anyprobe::BACKEND);
-    #[cfg(windows)]
+    #[cfg(all(windows, not(anyprobe_noop)))]
     {
         let guid = anyprobe::__private::etw::guid_string("attr");
         let _ = writeln!(out, "etw-provider=attr etw-guid={guid}");

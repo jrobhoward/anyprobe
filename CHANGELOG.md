@@ -33,6 +33,10 @@ released together with the same version.
     made on the first enabled check of one of its probes.
   - Every other target, FreeBSD on architectures other than x86-64
     included: probes compile to nothing.
+  - `--cfg anyprobe_noop`, on any target: probes compile to nothing in every
+    crate of the build. A program that uses a library with probes, and wants
+    none, sets it in its `.cargo/config.toml`. A cfg rather than a Cargo
+    feature, so no library can turn off the probes of another.
 - `probes!`: defines probes, each a module with `enabled()` and `fire(..)`,
   to fire from anywhere. Arguments are integers up to 64 bits, `bool`,
   `char`, raw pointers, `&str`, `&[u8]`, `Option<&str>`, `Option<&[u8]>`

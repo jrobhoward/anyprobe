@@ -45,7 +45,7 @@ fn main() {
         println!("probes unavailable: {e}");
     }
     // The GUID an ETW session enables; `cargo anyprobe wprp` writes it too.
-    #[cfg(windows)]
+    #[cfg(all(windows, not(anyprobe_noop)))]
     println!("etw-guid={}", anyprobe::__private::etw::guid_string("demo"));
     let customers = ["ana", "bo", "chen"];
     let mut n = 0u64;

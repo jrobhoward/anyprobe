@@ -71,7 +71,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let iterations: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(1);
     let interval = Duration::from_millis(args.next().and_then(|a| a.parse().ok()).unwrap_or(20));
-    #[cfg(windows)]
+    #[cfg(all(windows, not(anyprobe_noop)))]
     {
         // `attach-windows-attr.ps1` reads the provider GUID to start its session.
         let guid = anyprobe::__private::etw::guid_string("attr_async");

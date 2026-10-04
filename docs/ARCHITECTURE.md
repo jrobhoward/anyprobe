@@ -172,6 +172,13 @@ in this group.
 - `--cfg anyprobe_dylib` is a cfg, not a Cargo feature. Cargo unifies
   features, so one crate enabling it would slow the checks of every crate in
   the build.
+- `--cfg anyprobe_noop` selects the no-op backend on every target, for a
+  program that wants no probes from the libraries it uses. It is a cfg for
+  the same reason: a feature that removes probes is a negative feature, and
+  one library enabling it would remove every other crate's probes. The cfg
+  is set by whoever builds the final binary. It changes only which backend
+  module is compiled, so the public API, and the code the macros generate,
+  stay the same with it on.
 
 ## Argument encoding
 

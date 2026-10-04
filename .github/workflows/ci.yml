@@ -84,6 +84,20 @@ jobs:
             cargo clippy --workspace --target $t --all-targets -- -Dwarnings
             cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t
           done
+      # `--cfg anyprobe_noop` selects the no-op backend on every target. Tests
+      # run on the host; every target is checked, since each one gates its
+      # backend on the cfg. Step-scoped, like the step above.
+      - name: No-op opt-out
+        env:
+          RUSTFLAGS: --cfg anyprobe_noop
+        run: |
+          set -euo pipefail
+          cargo test --workspace --target-dir target/cfg-noop
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
+                   x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
+                   aarch64-pc-windows-msvc; do
+            cargo clippy --workspace --target $t --all-targets --target-dir target/cfg-noop -- -Dwarnings
+          done
 
   msrv:
     name: MSRV (1.88.0)

@@ -95,7 +95,9 @@ fn constants____default_provider____is_the_crate_name() {
 
 #[test]
 fn backend____this_target____is_named() {
-    let expected = if cfg!(all(
+    let expected = if cfg!(anyprobe_noop) {
+        "noop"
+    } else if cfg!(all(
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
     )) {

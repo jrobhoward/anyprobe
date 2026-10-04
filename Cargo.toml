@@ -20,8 +20,12 @@ unsafe_op_in_unsafe_fn = "forbid"
 missing_docs = "warn"
 missing_debug_implementations = "warn"
 # `--cfg anyprobe_dylib`: plain Rust semaphore loads on Linux, for Rust `dylib`
-# crates, which cannot link the direct `asm!` load.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(anyprobe_dylib)"] }
+# crates, which cannot link the direct `asm!` load. `--cfg anyprobe_noop`: the
+# no-op backend on every target, for a build that wants no probes.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(anyprobe_dylib)",
+    "cfg(anyprobe_noop)",
+] }
 
 [workspace.lints.clippy]
 cognitive_complexity = "warn"

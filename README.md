@@ -211,6 +211,28 @@ calls and keep its description; on Linux, macOS and FreeBSD `list` marks such
 a probe and the scripts leave it out. Windows binaries have no per-site
 metadata to check against.
 
+## Turning probes off
+
+A program that uses a library with probes, and wants none of them, builds
+with `--cfg anyprobe_noop`. Put it in the program's `.cargo/config.toml`:
+
+```toml
+[build]
+rustflags = ["--cfg", "anyprobe_noop"]
+```
+
+or set it for one build with `RUSTFLAGS="--cfg anyprobe_noop" cargo build`.
+Every probe in every crate of the build then compiles to nothing, as on a
+target with no tracer: no SDT notes, DOF or ETW metadata in the binary,
+nothing registered at startup, an empty `anyprobe::list()`, and
+`anyprobe::BACKEND` set to `noop`. The libraries need no change.
+
+`rustflags` set in the environment replaces the one in
+`.cargo/config.toml`, and changing it rebuilds every dependency. It is a cfg
+rather than a Cargo feature because Cargo unifies features across the build:
+a library that turned such a feature on would turn off the probes of every
+other crate, and the program building them could not turn them back on.
+
 ## Caveats
 
 - With no tracer attached a probe costs under half a nanosecond. While a

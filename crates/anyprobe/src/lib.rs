@@ -13,6 +13,9 @@
 //! | Windows | ETW TraceLogging | WPR, PerfView, logman |
 //! | anything else | nothing; checks are `false` | none |
 //!
+//! `--cfg anyprobe_noop` compiles every probe to nothing on every target;
+//! see [Turning probes off](#turning-probes-off).
+//!
 //! [`probe`] probes a function's entry and return:
 //!
 //! ```
@@ -79,6 +82,28 @@
 //!   code the choice follows the declared bounds: an argument of type `T`
 //!   where `T: Debug` is encoded with `{:?}`, even if the concrete type is
 //!   also `Serialize`.
+//!
+//! # Turning probes off
+//!
+//! A program that depends, directly or not, on a library with probes can
+//! compile every probe out by building with `--cfg anyprobe_noop`, for
+//! example in the program's `.cargo/config.toml`:
+//!
+//! ```toml
+//! [build]
+//! rustflags = ["--cfg", "anyprobe_noop"]
+//! ```
+//!
+//! The probes in every crate of the build then behave as on a target with no
+//! tracer: `enabled()` is `false`, `fire` does nothing, no tracer metadata
+//! is emitted, [`list`] is empty, nothing registers at startup on FreeBSD or
+//! with ETW on Windows, and [`BACKEND`] is `noop`. The API is unchanged, so
+//! the libraries compile as they are. A `symbol` given to [`probe`] still
+//! sets the function's symbol name.
+//!
+//! It is a cfg rather than a Cargo feature because Cargo unifies features: a
+//! library enabling such a feature would turn off the probes of every other
+//! crate in the build. The cfg is set by whoever builds the final binary.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -94,56 +119,71 @@ mod error;
 mod native;
 pub mod registry;
 
+// `--cfg anyprobe_noop` selects the no-op backend on every target, for a
+// build that wants no probes in any crate (see the crate docs). A cfg, not a
+// feature: whoever builds the final binary decides, and no library can.
 #[cfg(all(
     target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(anyprobe_noop)
 ))]
 #[path = "linux.rs"]
 mod backend;
 
 #[cfg(all(
     target_os = "macos",
-    any(target_arch = "x86_64", target_arch = "aarch64")
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(anyprobe_noop)
 ))]
 #[path = "macos.rs"]
 mod backend;
 
-#[cfg(all(target_os = "freebsd", target_arch = "x86_64"))]
+#[cfg(all(target_os = "freebsd", target_arch = "x86_64", not(anyprobe_noop)))]
 #[path = "freebsd.rs"]
 mod backend;
 
-#[cfg(windows)]
+#[cfg(all(windows, not(anyprobe_noop)))]
 #[path = "windows.rs"]
 mod backend;
 
-#[cfg(not(any(
-    all(
-        any(target_os = "linux", target_os = "macos"),
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    ),
-    all(target_os = "freebsd", target_arch = "x86_64"),
-    windows
-)))]
+#[cfg(any(
+    anyprobe_noop,
+    not(any(
+        all(
+            any(target_os = "linux", target_os = "macos"),
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "freebsd", target_arch = "x86_64"),
+        windows
+    ))
+))]
 #[path = "noop.rs"]
 mod backend;
 
 // The registry section and its `register!`, shared by the ELF backends.
-#[cfg(any(
-    all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+#[cfg(all(
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "freebsd", target_arch = "x86_64")
     ),
-    all(target_os = "freebsd", target_arch = "x86_64")
+    not(anyprobe_noop)
 ))]
 mod elf;
 
 // The FreeBSD site table. Plain data processing, so its tests run on every
 // host.
-#[cfg(any(all(target_os = "freebsd", target_arch = "x86_64"), test))]
+#[cfg(any(
+    all(target_os = "freebsd", target_arch = "x86_64", not(anyprobe_noop)),
+    test
+))]
 mod sites;
 
 /// Name of the probe backend compiled for this target: `linux-sdt`,
-/// `macos-dtrace`, `freebsd-dtrace`, `windows-etw` or `noop`.
+/// `macos-dtrace`, `freebsd-dtrace`, `windows-etw` or `noop`. `noop` on
+/// every target under `--cfg anyprobe_noop`.
 pub const BACKEND: &str = backend::NAME;
 
 /// Whether the probes of this executable or library are registered with the
@@ -281,7 +321,7 @@ pub mod __private {
     pub use crate::__anyprobe_unlisted as unlisted;
     pub use crate::encode::{self, Value};
 
-    #[cfg(windows)]
+    #[cfg(all(windows, not(anyprobe_noop)))]
     pub use crate::backend::etw;
 
     /// Whether the `autoref` and `serde` features are on, for tests that

@@ -78,7 +78,7 @@ fn main() {
     if let Err(e) = anyprobe::registration() {
         let _ = writeln!(out, "register-error={e}");
     }
-    #[cfg(windows)]
+    #[cfg(all(windows, not(anyprobe_noop)))]
     {
         let guid = anyprobe::__private::etw::guid_string(work__entry::PROVIDER);
         let _ = writeln!(
