@@ -1,0 +1,5 @@
+error: probes cannot be `unsafe`
+ --> tests/ui/signature____unsafe____is_rejected.rs:3:5
+  |
+3 |     unsafe fn hit();
+  |     ^^^^^^

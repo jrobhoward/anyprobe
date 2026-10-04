@@ -20,7 +20,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
     AttrStyle, Block, FnArg, GenericArgument, GenericParam, Ident, ItemFn, LitStr, Pat,
-    PathArguments, ReturnType, Signature, Token, Type, TypeParamBound,
+    PathArguments, ReceiverKind, ReturnType, Safety, Signature, Token, Type, TypeParamBound,
 };
 
 use crate::args::{self, Kind};
@@ -262,11 +262,13 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     for attr in &mut func.attrs {
         attr.style = AttrStyle::Outer;
     }
+    // `modifiers` holds only `default`, which `ItemFn` never parses.
     let ItemFn {
         attrs,
         vis,
         sig,
         block,
+        ..
     } = &func;
 
     // With `unwind`, a guard that fires the unwind probe if it is dropped
@@ -379,7 +381,7 @@ fn run_async(
     // directly (before edition 2024); inside an `async` block that needs an
     // `unsafe` block.
     let stmts = &block.stmts;
-    let body = if sig.unsafety.is_some() {
+    let body = if matches!(sig.safety, Safety::Unsafe(_)) {
         quote!(unsafe { #(#stmts)* })
     } else {
         quote!(#(#stmts)*)
@@ -410,7 +412,7 @@ fn run_sync(
     let private = quote!(::anyprobe::__private);
     // An `unsafe fn` body may call unsafe code directly (before edition
     // 2024); inside a closure that needs an `unsafe` block.
-    let body = if sig.unsafety.is_some() {
+    let body = if matches!(sig.safety, Safety::Unsafe(_)) {
         quote!({ unsafe #block })
     } else {
         quote!(#block)
@@ -555,6 +557,23 @@ fn check_signature(func: &ItemFn, options: &Options) -> syn::Result<()> {
     Ok(())
 }
 
+/// The type of a `self` receiver, as written or implied: `Self` for `self`,
+/// `&'a mut Self` for `&'a mut self`.
+fn receiver_type(r: &syn::Receiver) -> syn::Result<Type> {
+    let span = r.self_token.span;
+    match &r.kind {
+        ReceiverKind::Value => Ok(syn::parse_quote_spanned!(span=> Self)),
+        ReceiverKind::Reference(and, lifetime, mutability) => {
+            Ok(syn::parse_quote_spanned!(span=> #and #lifetime #mutability Self))
+        }
+        ReceiverKind::Typed(_, ty) => Ok((**ty).clone()),
+        _ => Err(syn::Error::new(
+            span,
+            "`#[probe]` does not support this receiver",
+        )),
+    }
+}
+
 /// Each argument the entry probe passes, in order, with its mode applied.
 /// Checks that every listed name is an argument; `options.modes` is drained.
 fn collect_args(func: &ItemFn, options: &mut Options) -> syn::Result<Vec<Passed>> {
@@ -564,7 +583,7 @@ fn collect_args(func: &ItemFn, options: &mut Options) -> syn::Result<Vec<Passed>
             FnArg::Receiver(r) => (
                 "self".to_owned(),
                 quote_spanned!(r.self_token.span=> self),
-                (*r.ty).clone(),
+                receiver_type(r)?,
                 true,
             ),
             FnArg::Typed(t) => match &*t.pat {

@@ -58,12 +58,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # Cross-compile checks for the other OS backends. Each needs `--all-targets`:
 # without it the `*_tests.rs` files are not compiled, and a `cfg`-gated test
 # referring to something that has been renamed sails straight through. Needs
-# `rustup target add` for each target once.
+# `rustup target add` for each target once. `anyprobe-bench` is excluded:
+# criterion builds C code with the target's C compiler, even under clippy.
 # FreeBSD x86-64 has its own backend; the site table tests run on every host.
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
          x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
          aarch64-pc-windows-msvc; do
-  cargo clippy --workspace --target $t --all-targets -- -Dwarnings || break
+  cargo clippy --workspace --exclude anyprobe-bench --target $t --all-targets \
+    -- -Dwarnings || break
 done
 
 # `check` and `clippy` stop before codegen, so they never assemble an `asm!`
@@ -90,8 +92,8 @@ cargo test --workspace --features autoref
 # load with a plain Rust load, for Rust `dylib` crates. A separate target dir
 # keeps the RUSTFLAGS change from rebuilding the default one.
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-  RUSTFLAGS="--cfg anyprobe_dylib" cargo clippy --workspace --target $t \
-    --all-targets --target-dir target/cfg-dylib -- -Dwarnings || break
+  RUSTFLAGS="--cfg anyprobe_dylib" cargo clippy --workspace --exclude anyprobe-bench \
+    --target $t --all-targets --target-dir target/cfg-dylib -- -Dwarnings || break
 done
 
 # `--cfg anyprobe_noop` selects the no-op backend on every target, for a
@@ -101,8 +103,8 @@ RUSTFLAGS="--cfg anyprobe_noop" cargo test --workspace --target-dir target/cfg-n
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
          x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
          aarch64-pc-windows-msvc; do
-  RUSTFLAGS="--cfg anyprobe_noop" cargo clippy --workspace --target $t \
-    --all-targets --target-dir target/cfg-noop -- -Dwarnings || break
+  RUSTFLAGS="--cfg anyprobe_noop" cargo clippy --workspace --exclude anyprobe-bench \
+    --target $t --all-targets --target-dir target/cfg-noop -- -Dwarnings || break
 done
 
 # Attach checks, one per OS: build, attach the native tracer, and print
@@ -160,8 +162,8 @@ powershell -ExecutionPolicy Bypass -File spike\scripts\check-gaps-windows.ps1   
 sh spike/scripts/startup-cost-freebsd.sh
 
 # Disabled-probe cost (criterion), as the CI `spike bench` job runs it
-cargo bench -p anyprobe --bench disabled_cost
-cargo bench -p anyprobe-spike --bench disabled_cost
+cargo bench -p anyprobe-bench --bench disabled_cost
+cargo bench -p anyprobe-bench --bench spike_disabled_cost
 
 # Packaging, as the CI `package` job runs it. The verify step builds the
 # packaged crates as registry crates, and cargo assumes a registry crate of a
@@ -224,6 +226,10 @@ See `docs/ARCHITECTURE.md` for the design. Summary a contributor needs day to da
   binary, which defines probes.
 - `crates/anyprobe-check` (unpublished): one probe per argument kind, so a
   library build reaches every backend's codegen.
+- `crates/anyprobe-bench` (unpublished): the criterion benches for
+  `anyprobe` and the spike. criterion builds C code (`alloca`) with the
+  target's compiler, even under `check`, so the cross-target loops pass
+  `--exclude anyprobe-bench`, and no other crate depends on criterion.
 - `spike/` (`anyprobe-spike`, unpublished): the phase-0 hand-written probes,
   the attach and capture scripts, `examples/inspect_dof.rs`, and the FreeBSD
   prototype the backend grew from.
@@ -386,8 +392,7 @@ entry. Crates found to be incompatible go in `[bans] deny` by name.
 - **semver:** `cargo-semver-checks`, skipped with a notice until a baseline
   exists on crates.io.
 - **fmt.**
-- **spike bench:** `cargo bench --bench disabled_cost` for the spike and
-  `anyprobe` on each OS, `continue-on-error` since shared runners are noisy.
+- **spike bench:** `cargo bench -p anyprobe-bench`, both benches, on each OS, `continue-on-error` since shared runners are noisy.
 
 **A multi-line `run:` in the cross-OS matrix needs `shell: bash`.** The
 Windows default shell is PowerShell, which does not parse `if`, `[`, `&&` or

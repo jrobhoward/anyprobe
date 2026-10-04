@@ -34,7 +34,7 @@ The check on each platform:
   removes the probe.
 
 Measured with criterion: a function with an entry and a return probe against
-the same function without them, as in `crates/anyprobe/benches/disabled_cost.rs`.
+the same function without them, as in `crates/anyprobe-bench/benches/disabled_cost.rs`.
 
 | Machine | Without probes | With two probes | Per probe |
 |---|---|---|---|
@@ -63,7 +63,7 @@ the same function without them, as in `crates/anyprobe/benches/disabled_cost.rs`
 - On FreeBSD, startup also builds and registers the DOF, once per executable
   or library that links anyprobe. See [FreeBSD startup](#freebsd-startup).
 
-Run the benchmark with `cargo bench -p anyprobe --bench disabled_cost`.
+Run the benchmark with `cargo bench -p anyprobe-bench --bench disabled_cost`.
 Differences below a nanosecond are within the noise of a laptop on battery or
 under load; the instruction count is the steadier comparison.
 

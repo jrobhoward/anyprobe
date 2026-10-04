@@ -57,9 +57,6 @@ dof = { version = "0.4", default-features = false }
 libc = "0.2.150"
 
 [dev-dependencies]
-# 0.5, not 0.8: 0.8 builds a C dependency (`alloca`) unconditionally, which
-# breaks `cargo clippy --all-targets --target ...` for every cross target.
-criterion = { version = "0.5", default-features = false }
 # The FreeBSD site table parser is plain data processing, so its tests run on
 # every host.
 dof = { version = "0.4", default-features = false }
@@ -71,7 +68,3 @@ trybuild = "1"
 [[example]]
 name = "attr"
 required-features = ["serde"]
-
-[[bench]]
-name = "disabled_cost"
-harness = false

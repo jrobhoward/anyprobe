@@ -1,5 +1,5 @@
-//! Cost of a probed function with no tracer attached, against the same
-//! function with no probes.
+//! Cost of the spike's hand-written probes with no tracer attached, against
+//! the same function with no probes.
 
 #![allow(missing_docs)]
 

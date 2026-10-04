@@ -161,6 +161,11 @@ impl Counter {
         self.value
     }
 
+    #[anyprobe::probe(name = "counter_unbox", debug(self))]
+    fn unbox(self: Box<Self>) -> u32 {
+        self.value
+    }
+
     #[anyprobe::probe(name = "counter_new")]
     fn new(value: u32) -> Self {
         Counter {
@@ -256,6 +261,11 @@ fn probe____methods____borrow_and_move_self() {
     assert_eq!(c.name(), "n");
     assert_eq!(c.area(), 0);
     assert_eq!(c.into_value(), 13);
+}
+
+#[test]
+fn probe____typed_self____is_passed_through() {
+    assert_eq!(Box::new(Counter::new(7)).unbox(), 7);
 }
 
 #[test]

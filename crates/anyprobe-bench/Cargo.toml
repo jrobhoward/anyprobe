@@ -1,0 +1,31 @@
+[package]
+name = "anyprobe-bench"
+version = "0.0.0"
+description = "Disabled-probe cost benchmarks for anyprobe and the spike"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyprobe = { path = "../anyprobe", default-features = false }
+anyprobe-spike = { path = "../../spike" }
+
+# criterion builds a C dependency (`alloca`) with the target's C compiler,
+# even under `cargo check`. Keeping it in this crate alone lets the
+# cross-target loops pass `--all-targets --exclude anyprobe-bench` and still
+# type-check every other crate's tests on every target.
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false }
+
+[[bench]]
+name = "disabled_cost"
+harness = false
+
+[[bench]]
+name = "spike_disabled_cost"
+harness = false

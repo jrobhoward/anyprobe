@@ -176,8 +176,10 @@ fn validate(item: ForeignItemFn) -> syn::Result<Probe> {
     if let Some(t) = &sig.asyncness {
         return unsupported(t.span(), "`async`");
     }
-    if let Some(t) = &sig.unsafety {
-        return unsupported(t.span(), "`unsafe`");
+    match &sig.safety {
+        syn::Safety::Unsafe(t) => return unsupported(t.span(), "`unsafe`"),
+        syn::Safety::Safe(t) => return unsupported(t.span(), "`safe`"),
+        _ => {}
     }
     if let Some(abi) = &sig.abi {
         return unsupported(abi.span(), "`extern`");

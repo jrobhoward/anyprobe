@@ -13,6 +13,7 @@ it attaches.
 | `anyprobe` | The facade and runtime. One backend module per platform, the encoder, the registry and the public `Native` trait. All `asm!` and `unsafe` live here. |
 | `cargo-anyprobe` | The `cargo anyprobe` binary. Reads the registry and the tracer metadata from a built file and writes scripts. |
 | `anyprobe-check` | Unpublished. One probe per argument kind, so a library build reaches every backend's code generation. |
+| `anyprobe-bench` | Unpublished. The criterion benchmarks of a probe with no tracer, for `anyprobe` and the spike. criterion builds C code for the target, so this crate is left out of the cross-target checks. |
 | `anyprobe-spike` | Unpublished. Hand-written probes, the attach and capture scripts, and the first FreeBSD prototype. |
 
 The macros and the runtime are released together with an exact version

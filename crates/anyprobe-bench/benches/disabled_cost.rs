@@ -1,5 +1,5 @@
 //! Cost of a probed function with no tracer attached, against the same
-//! function with no probes. `probed` mirrors the spike's benchmark, so the
+//! function with no probes. `probed` mirrors `spike_disabled_cost.rs`, so the
 //! generated code can be compared with the hand-written probes; `attribute`
 //! is the same function under `#[probe]` with the same arguments and a native
 //! return value; `fire_macro` is `probed` written with `anyprobe::fire!`.

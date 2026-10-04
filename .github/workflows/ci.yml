@@ -55,13 +55,16 @@ jobs:
           components: clippy
           targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-freebsd, x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
       # `--all-targets` so the `cfg`-gated `*_tests.rs` files compile too.
+      # `anyprobe-bench` is left out: criterion builds C code with the
+      # target's compiler, which this runner has only for its own target. The
+      # `build` jobs check it natively.
       - name: Clippy per target
         run: |
           set -euo pipefail
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
                    x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
                    aarch64-pc-windows-msvc; do
-            cargo clippy --workspace --target $t --all-targets -- -Dwarnings
+            cargo clippy --workspace --exclude anyprobe-bench --target $t --all-targets -- -Dwarnings
           done
       # `check` and `clippy` stop before codegen and never assemble an `asm!`
       # template. `build --lib` reaches codegen and needs no linker.
@@ -81,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            cargo clippy --workspace --target $t --all-targets -- -Dwarnings
+            cargo clippy --workspace --exclude anyprobe-bench --target $t --all-targets -- -Dwarnings
             cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t
           done
       # `--cfg anyprobe_noop` selects the no-op backend on every target. Tests
@@ -96,7 +99,7 @@ jobs:
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
                    x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
                    aarch64-pc-windows-msvc; do
-            cargo clippy --workspace --target $t --all-targets --target-dir target/cfg-noop -- -Dwarnings
+            cargo clippy --workspace --exclude anyprobe-bench --target $t --all-targets --target-dir target/cfg-noop -- -Dwarnings
           done
 
   msrv:
@@ -336,5 +339,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo bench -p anyprobe-spike --bench disabled_cost -- --warm-up-time 2 --measurement-time 5
-      - run: cargo bench -p anyprobe --bench disabled_cost -- --warm-up-time 2 --measurement-time 5
+      - run: cargo bench -p anyprobe-bench --bench spike_disabled_cost -- --warm-up-time 2 --measurement-time 5
+      - run: cargo bench -p anyprobe-bench --bench disabled_cost -- --warm-up-time 2 --measurement-time 5
