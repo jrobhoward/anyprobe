@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 # The registry parser. Exact, like anyprobe-macros: the record format belongs
 # to one anyprobe version, and a newer format is rejected rather than misread.
+# `tests/cli.rs` also defines probes with it and reads its own binary.
 anyprobe = { version = "=0.9.0", path = "../anyprobe", default-features = false }
 # DOF sections in macOS binaries, to check that a listed probe has sites.
 dof = { version = "0.4", default-features = false, features = ["des"] }
@@ -28,7 +29,3 @@ thiserror = "2.0.12"
 # `Guid::from_name`, the ETW provider GUID TraceLogging derives from a
 # provider name, for WPR profiles. Pure Rust on every host; no macros.
 tracelogging = { version = "1.2", default-features = false }
-
-[dev-dependencies]
-# `tests/cli.rs` defines probes and reads its own binary with the CLI.
-# `anyprobe` itself is a regular dependency, without default features.

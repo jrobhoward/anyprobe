@@ -60,6 +60,7 @@ fn parse____probe_record____decodes_every_field() {
     assert_eq!(
         sites,
         vec![Site {
+            offset: 0,
             is_enabled: false,
             address: 0x1000,
             provider: "spike".into(),
@@ -159,7 +160,7 @@ fn to_dof____sites_of_one_probe____share_the_lowest_base() {
     section.extend(probe_site(0x1000));
     section.extend(enabled_site(0x1010));
     section.extend(enabled_site(0x1080));
-    let dof = to_dof(&parse(&section).unwrap());
+    let dof = to_dof(&parse(&section).unwrap()).unwrap();
 
     let probes = dof_probes(&dof, "spike", "work-entry");
     assert_eq!(probes.len(), 1);
@@ -174,7 +175,7 @@ fn to_dof____sites_of_one_probe____share_the_lowest_base() {
 fn to_dof____duplicate_site____is_listed_once() {
     let mut section = probe_site(0x1000);
     section.extend(probe_site(0x1000));
-    let dof = to_dof(&parse(&section).unwrap());
+    let dof = to_dof(&parse(&section).unwrap()).unwrap();
     assert_eq!(dof_probes(&dof, "spike", "work-entry")[0].offsets, vec![0]);
 }
 
@@ -198,7 +199,7 @@ fn to_dof____same_name_different_arguments____are_separate_probes() {
         0x2000,
         &["p", "new-entry", "new"],
     ));
-    let dof = to_dof(&parse(&section).unwrap());
+    let dof = to_dof(&parse(&section).unwrap()).unwrap();
 
     let mut probes = dof_probes(&dof, "p", "new-entry");
     probes.sort_by_key(|p| p.address);
@@ -214,7 +215,7 @@ fn to_dof____same_name_different_arguments____are_separate_probes() {
 fn to_dof____same_name_two_functions____are_separate_probes() {
     let mut section = record(RECORD_VERSION, 0, 0x1000, &["p", "n", "f"]);
     section.extend(record(RECORD_VERSION, 0, 0x2000, &["p", "n", "g"]));
-    let dof = to_dof(&parse(&section).unwrap());
+    let dof = to_dof(&parse(&section).unwrap()).unwrap();
     assert_eq!(dof_probes(&dof, "p", "n").len(), 2);
 }
 
@@ -227,14 +228,59 @@ fn to_dof____two_probes____are_separate_entries() {
         0x2000,
         &["spike", "work-return", "work", "uint64_t", "uint64_t"],
     ));
-    let dof = to_dof(&parse(&section).unwrap());
+    let dof = to_dof(&parse(&section).unwrap()).unwrap();
     assert_eq!(dof.providers["spike"].probes.len(), 2);
     assert_eq!(dof_probes(&dof, "spike", "work-return")[0].address, 0x2000);
 }
 
 #[test]
 fn to_dof____serialized____starts_with_dof_magic() {
-    let dof = to_dof(&parse(&probe_site(0x1000)).unwrap());
+    let dof = to_dof(&parse(&probe_site(0x1000)).unwrap()).unwrap();
     let bytes = dof::serialize_section(&dof);
     assert_eq!(&bytes[..4], b"\x7fDOF");
+}
+
+#[test]
+fn parse____argument_type_not_utf8____is_an_error() {
+    let mut section = record(RECORD_VERSION, 0, 0x1000, &["p", "n", "f", "int64_t", "x"]);
+    let at = section.iter().rposition(|&b| b == b'x').unwrap();
+    section[at] = 0xff;
+    assert_eq!(
+        site_table_error(&section),
+        (0, "argument type is not UTF-8")
+    );
+}
+
+#[test]
+fn parse____second_record____knows_its_offset() {
+    let mut section = probe_site(0x1000);
+    let second = section.len();
+    section.extend(enabled_site(0x2000));
+    let sites = parse(&section).unwrap();
+    assert_eq!((sites[0].offset, sites[1].offset), (0, second));
+}
+
+#[test]
+fn to_dof____sites_more_than_4_gib_apart____is_an_error() {
+    let mut section = probe_site(0x1000);
+    let far = section.len();
+    section.extend(probe_site(0x1000 + (1 << 32)));
+    match to_dof(&parse(&section).unwrap()) {
+        Err(RegistrationError::SiteTable { offset, what }) => {
+            assert_eq!(offset, far);
+            assert!(what.contains("4 GiB"), "{what}");
+        }
+        other => panic!("expected a site table error, got {other:?}"),
+    }
+}
+
+#[test]
+fn to_dof____sites_just_under_4_gib_apart____are_kept() {
+    let mut section = probe_site(0x1000);
+    section.extend(probe_site(0x1000 + u64::from(u32::MAX)));
+    let dof = to_dof(&parse(&section).unwrap()).unwrap();
+    assert_eq!(
+        dof_probes(&dof, "spike", "work-entry")[0].offsets,
+        vec![0, u32::MAX]
+    );
 }

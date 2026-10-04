@@ -58,7 +58,7 @@ pub(crate) fn registry_section() -> &'static [u8] {
     // section holding `PAD` and every record, so the range is one allocation
     // of initialized bytes. Every byte belongs to an immutable `static`,
     // never written, and lives for the whole program.
-    unsafe { core::slice::from_raw_parts(start, end as usize - start as usize) }
+    unsafe { core::slice::from_raw_parts(start, (end as usize).saturating_sub(start as usize)) }
 }
 
 /// Defines one probe's symbols, `enabled` and `fire`. Called by `probes!`.

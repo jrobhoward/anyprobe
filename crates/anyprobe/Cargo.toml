@@ -40,6 +40,9 @@ anyprobe-macros = { version = "=0.9.0", path = "../anyprobe-macros" }
 serde = { version = "1.0.200", optional = true, default-features = false, features = ["std"] }
 serde_json = { version = "1.0.120", optional = true, default-features = false, features = ["std"] }
 thiserror = "2.0.12"
+# The registry parser checks function and argument names against Rust's
+# identifier rules. Already in every build graph through `proc-macro2`.
+unicode-ident = "1"
 
 # Microsoft's TraceLogging without macros. The `tracelogging` crate's macros
 # expand to `::tracelogging::...` paths, which would make every user add it as

@@ -124,7 +124,8 @@ pub fn probes(input: TokenStream) -> TokenStream {
 ///   attach by symbol find it. The function must not be generic over types
 ///   or consts (rustc also refuses methods of generic `impl` blocks), nor an
 ///   `async fn`, and it must not carry `#[inline]`, `#[no_mangle]` or
-///   `#[export_name]`. Two functions with the same symbol fail to link.
+///   `#[export_name]`. Two functions with the same symbol fail to link, and
+///   so does a default trait method once two types use the default.
 ///
 /// # `async fn`
 ///
@@ -169,6 +170,9 @@ pub fn probes(input: TokenStream) -> TokenStream {
 /// `const fn`, functions returning `!`, `#[track_caller]`, arguments bound
 /// by a pattern other than a name or `_`, and functions that return a future
 /// without being `async fn` (`fn f() -> impl Future`, `#[async_trait]`).
+/// A future is recognized by how the return type is written; one returned
+/// through a type alias (`BoxFuture`) is not, and its probes fire when the
+/// future is created.
 #[proc_macro_attribute]
 pub fn probe(attr: TokenStream, item: TokenStream) -> TokenStream {
     attr::expand(attr.into(), item.into()).into()

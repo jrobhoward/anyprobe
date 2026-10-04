@@ -26,7 +26,7 @@ fn bin() -> &'static Path {
 #[test]
 fn bpftrace____arguments____are_read_by_type() {
     let bytes = section(&[entry("get__entry", "get", &ARGS)]);
-    let out = bpftrace(bin(), &groups(parse(&bytes), None, &Filter::default()));
+    let out = bpftrace(bin(), &groups(parse(&bytes), None, &Filter::default())).unwrap();
     assert!(
         out.contains(
             "usdt:/srv/app:app:get__entry\n{\n\tprintf(\"app:get__entry id=%lu path=%s delta=%ld \
@@ -39,7 +39,7 @@ fn bpftrace____arguments____are_read_by_type() {
 #[test]
 fn bpftrace____bytes____use_buf() {
     let bytes = section(&[entry("put__entry", "put", &[("data", "bytes")])]);
-    let out = bpftrace(bin(), &groups(parse(&bytes), None, &Filter::default()));
+    let out = bpftrace(bin(), &groups(parse(&bytes), None, &Filter::default())).unwrap();
     assert!(out.contains("data=%r\\n\", buf(arg0, arg1));"), "{out}");
 }
 
@@ -54,7 +54,8 @@ fn bpftrace____no_site_or_conflict____is_commented() {
     let out = bpftrace(
         bin(),
         &groups(parse(&bytes), Some(&sites), &Filter::default()),
-    );
+    )
+    .unwrap();
     assert!(
         out.contains("// app:gone__entry: no site: its code is not in the binary\n"),
         "{out}"
@@ -146,12 +147,82 @@ fn xml_text____double_dash____cannot_end_the_comment() {
     assert_eq!(xml_text("/a--b"), "/a- -b");
 }
 
+#[test]
+fn xml_text____run_of_dashes____has_no_double_dash() {
+    assert_eq!(xml_text("/a---->b"), "/a- - - ->b");
+}
+
+#[test]
+fn c_comment_text____end_of_comment____cannot_end_the_comment() {
+    assert_eq!(c_comment_text("/a*/b"), "/a* /b");
+}
+
+#[test]
+fn comment_text____line_breaks____stay_on_one_line() {
+    assert_eq!(c_comment_text("/a\nb\rc"), "/a?b?c");
+    assert_eq!(xml_text("/a\nb"), "/a?b");
+}
+
+#[test]
+fn bpftrace____path_with_a_character_bpftrace_reads_as_syntax____is_an_error() {
+    let bytes = section(&[entry("get__entry", "get", &ARGS)]);
+    let records = groups(parse(&bytes), None, &Filter::default());
+    for path in [
+        "/srv/my app",
+        "/srv/a,uprobe:/bin/sh:main",
+        "/srv/a{ system(\"id\") }",
+        "/srv/a\nBEGIN { exit(); }",
+        "/srv/a:b",
+        "/srv/a*",
+        "/srv/a#b",
+    ] {
+        let err = bpftrace(Path::new(path), &records).unwrap_err();
+        assert!(
+            matches!(&err, Error::Script { path: p, .. } if p == Path::new(path)),
+            "{path:?}: {err}"
+        );
+    }
+}
+
+#[test]
+fn bpftrace____path_of_plain_characters____is_written_as_it_is() {
+    let bytes = section(&[entry("get__entry", "get", &[])]);
+    let path = Path::new("/srv/my-app_v1.2+x/app");
+    let out = bpftrace(path, &groups(parse(&bytes), None, &Filter::default())).unwrap();
+    assert!(
+        out.contains("usdt:/srv/my-app_v1.2+x/app:app:get__entry\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn dtrace____path_that_would_end_the_comment____is_escaped() {
+    let bytes = section(&[entry("get__entry", "get", &[])]);
+    let path = Path::new("/srv/a*/\nBEGIN { exit(0); } /*");
+    let out = dtrace(path, &groups(parse(&bytes), None, &Filter::default()));
+    let header = out.split("*/").next().unwrap();
+    assert!(
+        header.contains("for /srv/a* /?BEGIN { exit(0); } /*\n"),
+        "{out}"
+    );
+    assert!(!out.contains("\nBEGIN"), "{out}");
+}
+
+#[test]
+fn wprp____path_that_would_end_the_comment____is_escaped() {
+    let bytes = section(&[entry("get__entry", "get", &[])]);
+    let path = Path::new("/srv/a-->\n<x/>");
+    let out = wprp(path, &groups(parse(&bytes), None, &Filter::default()));
+    assert!(out.contains("for /srv/a- ->?<x/>\n"), "{out}");
+    assert_eq!(out.matches("-->").count(), 1, "{out}");
+}
+
 const OPTIONAL: [(&str, &str); 3] = [("name", "opt_str"), ("key", "opt_bytes"), ("label", "cstr")];
 
 #[test]
 fn bpftrace____optional_and_c_strings____are_read_by_length_or_to_their_nul() {
     let bytes = section(&[entry("look__entry", "look", &OPTIONAL)]);
-    let out = bpftrace(bin(), &groups(parse(&bytes), None, &Filter::default()));
+    let out = bpftrace(bin(), &groups(parse(&bytes), None, &Filter::default())).unwrap();
     assert!(
         out.contains(
             "printf(\"app:look__entry name=%s key=%r label=%s\\n\", \

@@ -36,6 +36,7 @@ dependencies = [
  "thiserror",
  "tracelogging_dynamic",
  "trybuild",
+ "unicode-ident",
 ]
 
 [[package]]

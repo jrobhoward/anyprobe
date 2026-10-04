@@ -1,0 +1,5 @@
+error: `#[probe]` does not support functions that return a future without being `async fn`: the probes would fire when the future is created, not when it runs; write it as an `async fn` (in a trait too, rather than with `#[async_trait]`)
+ --> tests/ui/probe____returns_boxed_dyn_future____is_rejected.rs:6:22
+  |
+6 | fn fetch(id: u64) -> Pin<Box<dyn Future<Output = u64> + Send + 'static>> {
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

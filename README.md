@@ -238,8 +238,9 @@ metadata to check against.
   shared libraries loaded alongside it. Each probe's description takes
   about 150 bytes, most of it the source file path and module path.
 
-- macOS: `sudo dtrace` attaches with System Integrity Protection on, for
-  binaries that are not signed with the hardened runtime.
+- macOS: `sudo dtrace` attaches with System Integrity Protection on to the
+  binaries `cargo build` produces. A binary signed with the hardened
+  runtime, as a notarized release is, cannot be traced while SIP is on.
 - FreeBSD: the program registers its probes with the kernel as it starts.
   DTrace has to be loaded by then (`kldload dtraceall`), and the program has
   to be able to open `/dev/dtrace/helper`, which by default only root and

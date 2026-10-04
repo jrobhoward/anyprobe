@@ -194,6 +194,74 @@ fn parse____malformed_bodies____say_what_is_wrong() {
 }
 
 #[test]
+fn parse____names_the_macros_do_not_write____are_malformed() {
+    let provider = "provider is not a name the macros write";
+    let probe = "probe name is not a name the macros write";
+    let function = "function is not a Rust identifier";
+    let module = "module path is not a Rust path";
+    let file = "file holds a control character";
+    let arg = "argument name is not a Rust identifier";
+    let cases = [
+        (probes_with(1, "", &[]), provider),
+        (probes_with(1, "app\nBEGIN", &[]), provider),
+        (probes_with(1, "a:b", &[]), provider),
+        (probes_with(1, "café", &[]), provider),
+        (probes_with(1, "2app", &[]), provider),
+        (probes_with(2, "", &[]), probe),
+        (probes_with(2, "tick { system(\"id\") }", &[]), probe),
+        (probes_with(2, "t*", &[]), probe),
+        (probes_with(4, "new\"); system(\"id", &[]), function),
+        (probes_with(4, "a b", &[]), function),
+        (probes_with(5, "app::\u{1b}[2J", &[]), module),
+        (probes_with(5, "app::", &[]), module),
+        (probes_with(5, "", &[]), module),
+        (probes_with(6, "src/\u{1b}[2Jlib.rs", &[]), file),
+        (probes_with(6, "src/a\nb.rs", &[]), file),
+        (
+            probes_with(8, "1", &["id=%s\\n\", arg0); system(\"id", "u64"]),
+            arg,
+        ),
+        (probes_with(8, "1", &["", "u64"]), arg),
+        (probes_with(8, "1", &["a%n", "u64"]), arg),
+        (probes_with(8, "1", &["1a", "u64"]), arg),
+    ];
+    for (body, what) in cases {
+        let bytes = rec(&body);
+        assert_eq!(
+            all(&bytes),
+            [Err(RegistryError::Malformed { offset: 0, what })],
+            "{body:?}"
+        );
+    }
+}
+
+#[test]
+fn parse____names_the_macros_write____are_accepted() {
+    let body = body(&[
+        "1",
+        "_app2_",
+        "_9",
+        "entry",
+        "café",
+        "app::r#type::__anyprobe::__anyprobe_entry",
+        "src/my file (1).rs",
+        "1",
+        "2",
+        "größe",
+        "u64",
+        "_x",
+        "u64",
+    ]);
+    let bytes = rec(&body);
+    let probe = parse(&bytes).next().unwrap().unwrap();
+    assert_eq!(probe.provider, "_app2_");
+    assert_eq!(probe.function, Some("café"));
+    assert_eq!(probe.module_path, "app::r#type");
+    assert_eq!(probe.file, "src/my file (1).rs");
+    assert_eq!(probe.args[0].name, "größe");
+}
+
+#[test]
 fn parse____invalid_utf8____is_malformed() {
     let mut bytes = rec("1\0app\0x\0");
     let last = bytes.len() - 2;

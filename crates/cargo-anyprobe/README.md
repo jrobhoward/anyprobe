@@ -38,15 +38,24 @@ Two warnings:
   methods named `new`). DTrace gives each function its own argument types,
   so a script has to branch on `probefunc`; the generated scripts print no
   arguments for such a probe.
-- On Linux and macOS, a probe that has a description but no site, because
-  the linker removed the function's code. `list` marks it and the scripts
-  leave it out. Windows binaries have no per-site metadata, so nothing is
+- On Linux, macOS and FreeBSD, a probe that has a description but no
+  site, because the linker removed the function's code. `list` marks it and
+  the scripts leave it out. Windows binaries have no per-site metadata, so nothing is
   checked there.
 
 The binary has to be built with the same anyprobe version as this tool;
-a description written in another format is reported, not misread.
+a description written in another format is reported, not misread. So is a
+description with names anyprobe's macros never write, so a binary from
+elsewhere cannot put code into a generated script. `bpftrace` needs the
+binary's path to hold only ASCII letters, digits and `/._-+`.
 
 ## License
 
-Licensed under either of Apache License, Version 2.0 or MIT license at your
-option.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option.

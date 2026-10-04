@@ -7,12 +7,13 @@ it costs. `README.md` lists the ones that change how the crate is used.
 
 ### Intel Macs
 
-x86-64 macOS builds are checked without root on an Apple Silicon host: every
-probe site rewritten by ld64 and inside its function, and `cargo anyprobe
-list` finding every probe with a site. No tracer has attached to one on an
-Intel Mac, and none is planned: the backend stays, CI keeps building it, and
-it is unsupported in the sense that nobody has checked it. `spike/scripts/attach-macos-attr.sh`
-covers it. Cost: one run on an Intel host.
+x86-64 macOS builds are checked without root on an Apple Silicon host
+(`spike/scripts/attach-macos-attr.sh` with
+`SPIKE_TARGET=x86_64-apple-darwin`): every probe site is rewritten by ld64
+and inside its function, and `cargo anyprobe list` finds every probe with a
+site. CI builds the target. Nobody
+has attached dtrace to one on an Intel Mac. Cost: one run of the attach
+scripts on an Intel host.
 
 ### ARM64 hosts
 
@@ -35,9 +36,21 @@ CI job runs in a virtual machine too.
 
 ### Hardened and protected processes
 
-macOS binaries signed with the hardened runtime cannot be traced, and
-`dtrace` needs System Integrity Protection relaxed for others. Neither can be
-changed from inside the crate.
+With System Integrity Protection on, `sudo dtrace` attaches to the binaries
+`cargo build` produces, which are not signed with the hardened runtime. The
+walkthrough in [usage/macos.md](usage/macos.md), the measurements in
+[PERFORMANCE.md](PERFORMANCE.md#macos) and the macOS attach scripts all ran
+with SIP on. dtrace prints "system integrity protection is on, some features
+will not be available" and works.
+
+SIP does protect processes from dtrace: Apple's own binaries, and binaries
+signed with the hardened runtime, which notarization requires for
+distribution. dtrace cannot trace those while SIP is on, so the probes of a
+notarized release build cannot be traced on a machine with SIP on. Nobody has
+checked an anyprobe binary signed that way, or which entitlements or SIP
+settings would let dtrace attach to one. Nothing in the crate can change
+this: the protection is on the process, not on its probes. A development
+build that is not signed with the hardened runtime traces as usual.
 
 ## Tracers
 
@@ -149,9 +162,20 @@ platform and fails to link on macOS. `#[probe]` names end in `__entry`,
 
 `#[probe]` runs the body in a closure (or an awaited `async` block), so it
 rejects `const fn`, `-> !`, `#[track_caller]` and functions that return a
-future without being `async fn` (`#[async_trait]`). `symbol` also rejects
-generic fns, trait-impl methods and `async fn`, which have no single stable
-symbol. Supporting any of them changes how the return value is captured.
+future without being `async fn`. Supporting any of them changes how the
+return value is captured. A future is recognized by how the return type is
+written: `impl Future`, or `dyn Future` behind `Pin`, `Box` or a reference,
+which covers `#[async_trait]`. A future returned through a type alias, such
+as `BoxFuture`, is not recognized; its probes fire when the future is
+created and when the function returns it, not when it runs.
+
+`symbol` rejects functions generic over types or consts and `async fn`,
+which have no single stable symbol, and rustc rejects it on methods of a
+generic `impl` block. Methods of other trait impls take it. A default
+method body in a trait is generic over the implementing type, and the
+macro cannot tell it from an inherent method: `symbol` on one works while a
+single type uses the default, and fails to link ("symbol already defined")
+once two do.
 
 ### `async fn` probes
 
@@ -394,6 +418,15 @@ a removed probe is listed as present.
 Each record is about 150 bytes, most of it the source file and module paths.
 A binary with many probes carries that data in a read-only section. Shorter
 paths would need the macro to rewrite `file!()`.
+
+### bpftrace scripts need a plain path
+
+`cargo anyprobe bpftrace` writes the binary's absolute path into each
+`usdt:` probe. A path that holds anything other than ASCII letters, digits
+and `/._-+`, such as a space, is refused with an error rather than written
+into a script bpftrace would misread. Copying or linking the binary to a
+plain path works around it. Writing the path in quotes would lift the limit
+on bpftrace versions that accept a quoted path in a probe.
 
 ### Record format changes
 

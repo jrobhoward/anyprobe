@@ -198,7 +198,8 @@ See `docs/ARCHITECTURE.md` for the design. Summary a contributor needs day to da
   thread-local buffer; `native.rs` is the public `Native` trait.
   `registry.rs` holds the probe registry: the record format, the
   `register!` support the backends forward to (each backend picks the
-  section), the parser and `list()`; `error.rs` its error type and
+  section; Linux and FreeBSD share theirs in `elf.rs`), the parser and
+  `list()`; `error.rs` its error type and
   `RegistrationError`. The
   `serde`/`autoref` compile errors are `macro_rules!` in `lib.rs`, outside
   any backend, so they fire on every target.
@@ -303,9 +304,12 @@ layout changes `sites::RECORD_VERSION`, the `.byte 1` in `__anyprobe_site!`,
 and `cargo-anyprobe`'s reader with it.
 
 **Exported symbols use `#[unsafe(export_name = ...)]`.** Edition 2024 rejects
-the bare form in generated code. The `symbol` option refuses generic fns,
-trait-impl methods and async fns at compile time, since none has a single
-stable symbol.
+the bare form in generated code. The `symbol` option refuses fns generic
+over types or consts and async fns at compile time, since neither has a
+single stable symbol. rustc refuses it on methods of a generic `impl` block.
+A proc macro cannot tell a default trait method from an inherent one, so
+`symbol` there is accepted, and fails to link once two types use the
+default.
 
 **A compile-time guard only fires where it is compiled.** A `compile_error!`
 that rejects a feature or option combination has to live in code every

@@ -121,12 +121,12 @@ A session started before the program sees every firing:
 ```text
 > cargo anyprobe wprp target\release\examples\overhead.exe > overhead.wprp
 > wpr -start overhead.wprp -filemode
-> target\release\examples\overhead.exe 1000000
+> target\release\examples\overhead.exe 100000
 > wpr -stop overhead.etl
 ```
 
-The capture script ran this with 100,000 calls, which wrote 133 MB and 800,072
-events with none lost. The example printed, per call with a session recording
+This wrote 133 MB and 800,072 events with none lost: two functions with two
+probes each, over an untimed pass and the timed one. The example printed, per call with a session recording
 every event:
 
 ```text
@@ -139,7 +139,8 @@ Each call fires an entry and a return probe, so a firing took about 0.4 to
 0.5 µs. A session started with `logman -bs 1024 -nb 64 64` instead gave 847
 ns and 1086 ns per call, with no events lost. `logman`'s default buffers are
 smaller and a program this fast can overrun them; a `logman` run with the
-defaults wrote less than half the data. With no session the same example printed 1.9, 2.6 and 2.4 ns.
+defaults wrote less than half the data. With no session the same example
+printed 1.9, 2.6 and 2.4 ns.
 [PERFORMANCE.md](../PERFORMANCE.md) describes what the numbers mean.
 
 ## When it does not work

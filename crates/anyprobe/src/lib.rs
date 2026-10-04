@@ -127,6 +127,16 @@ mod backend;
 #[path = "noop.rs"]
 mod backend;
 
+// The registry section and its `register!`, shared by the ELF backends.
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "freebsd", target_arch = "x86_64")
+))]
+mod elf;
+
 // The FreeBSD site table. Plain data processing, so its tests run on every
 // host.
 #[cfg(any(all(target_os = "freebsd", target_arch = "x86_64"), test))]

@@ -38,6 +38,8 @@ const HEADER_LEN: usize = 16;
 /// One site, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Site {
+    /// Where the site's record starts in the table, for errors.
+    pub(crate) offset: usize,
     pub(crate) is_enabled: bool,
     pub(crate) address: u64,
     pub(crate) provider: String,
@@ -105,13 +107,15 @@ fn parse_record(record: &[u8], offset: usize) -> Result<Site, RegistrationError>
         return Err(malformed("empty provider or probe name"));
     }
     let mut arguments = Vec::new();
-    while let Ok(ty) = next() {
+    for ty in strings.by_ref() {
         if ty.is_empty() {
             break;
         }
-        arguments.push(ty);
+        let ty = std::str::from_utf8(ty).map_err(|_| malformed("argument type is not UTF-8"))?;
+        arguments.push(ty.to_owned());
     }
     Ok(Site {
+        offset,
         is_enabled,
         address,
         provider,
@@ -131,7 +135,11 @@ fn parse_record(record: &[u8], offset: usize) -> Result<Site, RegistrationError>
 /// argument types; a tracer matching the name matches all of them. Is-enabled
 /// records carry the argument types too, so they group with their probe's
 /// sites.
-pub(crate) fn to_dof(sites: &[Site]) -> dof::Section {
+///
+/// DOF gives each site as a 32-bit offset from the probe's base. Sites of
+/// one probe more than 4 GiB apart are a malformed table rather than offsets
+/// cut short, which would put a breakpoint at the wrong address.
+pub(crate) fn to_dof(sites: &[Site]) -> Result<dof::Section, RegistrationError> {
     type Key<'a> = (&'a str, &'a str, &'a str, &'a [String]);
     let mut by_probe: BTreeMap<Key<'_>, Vec<&Site>> = BTreeMap::new();
     for site in sites {
@@ -146,9 +154,11 @@ pub(crate) fn to_dof(sites: &[Site]) -> dof::Section {
         let mut offsets = Vec::new();
         let mut enabled_offsets = Vec::new();
         for site in &sites {
-            // Offsets are 32-bit in DOF. Every site of a probe is in the same
-            // object, so the distance from the lowest one fits.
-            let off = (site.address - base) as u32;
+            let off =
+                u32::try_from(site.address - base).map_err(|_| RegistrationError::SiteTable {
+                    offset: site.offset,
+                    what: "site is more than 4 GiB from its probe's first site",
+                })?;
             if site.is_enabled {
                 enabled_offsets.push(off);
             } else {
@@ -181,10 +191,10 @@ pub(crate) fn to_dof(sites: &[Site]) -> dof::Section {
                 },
             );
     }
-    dof::Section {
+    Ok(dof::Section {
         providers,
         ..Default::default()
-    }
+    })
 }
 
 #[cfg(test)]

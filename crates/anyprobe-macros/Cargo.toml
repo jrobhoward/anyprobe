@@ -2,6 +2,9 @@
 name = "anyprobe-macros"
 version = "0.9.0"
 description = "Procedural macros for anyprobe; use them through the anyprobe crate"
+keywords = ["tracing", "usdt", "dtrace", "bpftrace", "etw"]
+readme = "README.md"
+categories = ["development-tools::debugging", "development-tools::profiling"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

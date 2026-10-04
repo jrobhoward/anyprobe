@@ -1,0 +1,5 @@
+error: `#[probe]` does not support functions that return a future without being `async fn`: the probes would fire when the future is created, not when it runs; write it as an `async fn` (in a trait too, rather than with `#[async_trait]`)
+ --> tests/ui/probe____returns_impl_future____is_rejected.rs:4:22
+  |
+4 | fn fetch(id: u64) -> impl Future<Output = u64> {
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -34,7 +34,8 @@
 //! followed by a NUL. The fields are the format version ([`VERSION`]), the
 //! provider, the probe name, the origin, the function, the module path, the
 //! file, the line and the argument count, then the name and type of each
-//! argument. The section is `anyprobe_probes` on Linux and FreeBSD,
+//! argument. The parser accepts only the names the macros write (see
+//! [`parse`]). The section is `anyprobe_probes` on Linux and FreeBSD,
 //! `__DATA,__anyprobe` on macOS and `.aprobe` on Windows.
 
 use crate::error::RegistryError;
@@ -60,6 +61,13 @@ pub fn list() -> Probes<'static> {
 
 /// The probes in `section`, the contents of a registry section read from a
 /// binary.
+///
+/// A record is [`Malformed`](RegistryError::Malformed) unless its names are
+/// ones the macros write: the provider and probe name ASCII letters, digits
+/// and `_`, the function and argument names Rust identifiers, the module
+/// path a Rust path, and the file free of control characters. A
+/// [`ProbeInfo`] from a file of unknown origin can therefore be written into
+/// a tracer script or a terminal as it is.
 #[must_use]
 pub fn parse(section: &[u8]) -> Probes<'_> {
     Probes {
@@ -135,12 +143,25 @@ fn read_record(bytes: &[u8], offset: usize) -> Result<(ProbeInfo<'_>, usize), Re
             version: version.to_owned(),
         });
     }
-    let provider = field()?;
-    let name = field()?;
+    let provider = Some(field()?)
+        .filter(|p| is_ascii_name(p))
+        .ok_or(malformed("provider is not a name the macros write"))?;
+    let name = Some(field()?)
+        .filter(|n| is_ascii_name(n))
+        .ok_or(malformed("probe name is not a name the macros write"))?;
     let origin = Origin::from_str(field()?).ok_or(malformed("unknown origin"))?;
-    let function = Some(field()?).filter(|f| !f.is_empty());
-    let module_path = strip_probe_module(field()?, origin);
-    let file = field()?;
+    let function = match field()? {
+        "" => None,
+        f if is_identifier(f) => Some(f),
+        _ => return Err(malformed("function is not a Rust identifier")),
+    };
+    let module_path = Some(field()?)
+        .filter(|m| is_module_path(m))
+        .ok_or(malformed("module path is not a Rust path"))?;
+    let module_path = strip_probe_module(module_path, origin);
+    let file = Some(field()?)
+        .filter(|f| !f.contains(char::is_control))
+        .ok_or(malformed("file holds a control character"))?;
     let line = field()?
         .parse()
         .map_err(|_| malformed("line is not a number"))?;
@@ -149,7 +170,9 @@ fn read_record(bytes: &[u8], offset: usize) -> Result<(ProbeInfo<'_>, usize), Re
         .map_err(|_| malformed("argument count is not a number"))?;
     let mut args = Vec::with_capacity(count.min(16));
     for _ in 0..count {
-        let name = field()?;
+        let name = Some(field()?)
+            .filter(|n| is_identifier(n))
+            .ok_or(malformed("argument name is not a Rust identifier"))?;
         let ty = ArgType::from_str(field()?).ok_or(malformed("unknown argument type"))?;
         args.push(ArgInfo { name, ty });
     }
@@ -167,6 +190,33 @@ fn read_record(bytes: &[u8], offset: usize) -> Result<(ProbeInfo<'_>, usize), Re
         args,
     };
     Ok((probe, HEADER_LEN + len))
+}
+
+/// Whether `s` is a provider or probe name the macros accept: ASCII
+/// letters, digits and `_`, not starting with a digit.
+fn is_ascii_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether `s` is a Rust identifier without its `r#`, as the macros write a
+/// function or argument name.
+fn is_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .is_some_and(|c| c == '_' || unicode_ident::is_xid_start(c))
+        && chars.all(unicode_ident::is_xid_continue)
+}
+
+/// Whether `s` is a path `module_path!()` gives: identifiers, each possibly
+/// raw, joined by `::`.
+fn is_module_path(s: &str) -> bool {
+    s.split("::")
+        .all(|segment| is_identifier(segment.strip_prefix("r#").unwrap_or(segment)))
 }
 
 /// The module the probe was written in. The macros record `module_path!()`

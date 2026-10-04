@@ -150,3 +150,49 @@ fn expand____symbol_with_lifetimes_only____is_accepted() {
     assert!(out.contains("export_name"), "{out}");
     assert!(!out.contains("compile_error"), "{out}");
 }
+
+fn returns_future_str(ty: &str) -> bool {
+    returns_future(&syn::parse_str(ty).unwrap())
+}
+
+#[test]
+fn returns_future____future_shapes____are_recognized() {
+    for ty in [
+        "impl Future<Output = u32>",
+        "impl ::core::future::Future<Output = u32> + Send + 'a",
+        "impl Send + Future<Output = ()>",
+        "impl IntoFuture<Output = u32>",
+        "Pin<Box<dyn Future<Output = u32> + Send + 'async_trait>>",
+        "::core::pin::Pin<::std::boxed::Box<dyn ::core::future::Future<Output = u32>>>",
+        "Box<dyn Future<Output = u32> + Unpin>",
+        "Pin<&mut dyn Future<Output = u32>>",
+        "(impl Future<Output = u32>)",
+    ] {
+        assert!(returns_future_str(ty), "{ty}");
+    }
+}
+
+#[test]
+fn returns_future____other_types____are_not() {
+    for ty in [
+        "u32",
+        "impl Iterator<Item = u32>",
+        "Box<dyn Fn() -> u32>",
+        "Pin<Box<u32>>",
+        "Vec<Pin<Box<dyn Future<Output = u32>>>>",
+        "Option<impl Future<Output = u32>>",
+        "BoxFuture<'static, u32>",
+        "Result<Future, Error>",
+    ] {
+        assert!(!returns_future_str(ty), "{ty}");
+    }
+}
+
+#[test]
+fn expand____async_fn_returning_impl_future____is_accepted() {
+    let out = expand_str(
+        "provider = \"t\"",
+        "async fn f() -> impl Future<Output = u32> { async { 1 } }",
+    );
+    assert!(!out.contains("compile_error"), "{out}");
+}

@@ -108,7 +108,7 @@ pub mod etw {
     use core::ptr;
     use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
     use std::cell::RefCell;
-    use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
+    use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError, TryLockError};
 
     pub use tracelogging_dynamic::OutType;
     use tracelogging_dynamic::{EventBuilder, Guid, Level};
@@ -171,8 +171,10 @@ pub mod etw {
         #[cold]
         #[inline(never)]
         fn attach(&'static self) -> bool {
+            // `call_once_force`: had an earlier attempt panicked, `call_once`
+            // would panic in every later enabled check of this probe.
             self.once
-                .call_once(|| match Provider::get(self.provider_name) {
+                .call_once_force(|_| match Provider::get(self.provider_name) {
                     Some(provider) => {
                         self.provider
                             .store(ptr::from_ref(provider).cast_mut(), Ordering::Release);
@@ -254,7 +256,10 @@ pub mod etw {
             let rc = unsafe { Pin::static_ref(inner).register() };
             if rc != 0 {
                 // Left out of `PROVIDERS`, so the next probe naming it
-                // tries again.
+                // tries again. The allocation stays leaked: the callback
+                // context points at it, and whether ETW kept that pointer
+                // after refusing is not documented. One provider's worth per
+                // refused attempt, and each probe asks at most once.
                 return None;
             }
             providers.push(provider);
@@ -302,15 +307,26 @@ pub mod etw {
         }
     }
 
+    /// Locks `m` if no thread holds it. A lock poisoned by a panic is taken
+    /// anyway: the data stays consistent, since every critical section only
+    /// pushes to a `Vec` or stores flags.
+    fn try_lock<T>(m: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+        match m.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// Unregisters every provider at exit; their probes stay off afterwards.
     /// Skips the work if another thread holds the lock, since at exit that
     /// thread may never release it.
     extern "C" fn unregister_all() {
-        let Ok(providers) = PROVIDERS.try_lock() else {
+        let Some(providers) = try_lock(&PROVIDERS) else {
             return;
         };
         for provider in providers.iter() {
-            if let Ok(probes) = provider.probes.try_lock() {
+            if let Some(probes) = try_lock(&provider.probes) {
                 for state in probes.iter() {
                     state.store(OFF, Ordering::Relaxed);
                 }

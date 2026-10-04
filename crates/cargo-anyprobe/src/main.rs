@@ -5,6 +5,7 @@
 //! defines probes, from the file on disk, so it never runs the program and
 //! reads a binary built for any target.
 
+use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -40,7 +41,7 @@ Options:
   -r, --release             Release profile
       --target <TRIPLE>     Build for this target; picks the slice of a
                             universal macOS binary
-      --features <LIST>     Features to enable
+  -F, --features <LIST>     Features to enable
       --all-features        Enable every feature
       --no-default-features Do not enable the default features
       --manifest-path <PATH>
@@ -70,6 +71,21 @@ struct Options {
     build: cargo::Build,
     filter: report::Filter,
     json: bool,
+}
+
+/// The arguments as UTF-8, or a usage error naming the first that is not.
+/// `std::env::args` would panic on it instead.
+fn utf8_args(args: impl IntoIterator<Item = OsString>) -> Result<Vec<String>, Error> {
+    args.into_iter()
+        .map(|arg| {
+            arg.into_string().map_err(|arg| {
+                Error::Usage(format!(
+                    "argument `{}` is not valid UTF-8",
+                    arg.to_string_lossy()
+                ))
+            })
+        })
+        .collect()
 }
 
 /// Parses the arguments after the program name. Run by cargo, they start
@@ -202,7 +218,7 @@ fn run(options: &Options) -> Result<String, Error> {
     Ok(match options.command {
         Command::List if options.json => report::list_json(&groups),
         Command::List => report::list_text(&groups),
-        Command::Bpftrace => script::bpftrace(&path, &groups),
+        Command::Bpftrace => script::bpftrace(&path, &groups)?,
         Command::Dtrace => script::dtrace(&path, &groups),
         Command::Wprp => script::wprp(&path, &groups),
         Command::Help | Command::Version => String::new(),
@@ -210,8 +226,9 @@ fn run(options: &Options) -> Result<String, Error> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = parse_args(&args).and_then(|options| run(&options));
+    let result = utf8_args(std::env::args_os().skip(1))
+        .and_then(|args| parse_args(&args))
+        .and_then(|options| run(&options));
     match result {
         Ok(out) => {
             // A closed pipe (`| head`) is not an error worth reporting.

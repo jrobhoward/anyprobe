@@ -16,8 +16,12 @@ use std::collections::HashMap;
 use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::{format_ident, quote, quote_spanned};
 use syn::ext::IdentExt;
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{AttrStyle, FnArg, GenericParam, Ident, ItemFn, LitStr, Pat, ReturnType, Token, Type};
+use syn::{
+    AttrStyle, Block, FnArg, GenericArgument, GenericParam, Ident, ItemFn, LitStr, Pat,
+    PathArguments, ReturnType, Signature, Token, Type, TypeParamBound,
+};
 
 use crate::args::{self, Kind};
 use crate::names;
@@ -265,16 +269,6 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
         block,
     } = &func;
 
-    // An `unsafe fn` body may call unsafe code directly (before edition
-    // 2024); inside a closure or an `async` block that needs an `unsafe`
-    // block.
-    let body = if sig.unsafety.is_some() {
-        quote!({ unsafe #block })
-    } else {
-        quote!(#block)
-    };
-    let private = quote!(::anyprobe::__private);
-
     // With `unwind`, a guard that fires the unwind probe if it is dropped
     // before the body returns: a panic, or for an `async fn` the future
     // dropped before completion. On return it is forgotten, so the normal
@@ -289,73 +283,9 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     };
 
     let run = if is_async {
-        // The entry probe fires at the first poll, which is when an `async
-        // fn` body starts. The invocation id is drawn only if it is on.
-        let start = quote! {
-            let __anyprobe_invocation: u64 = if __anyprobe::#entry_ident::enabled() {
-                let __anyprobe_invocation = #private::next_invocation();
-                #entry_call
-                __anyprobe_invocation
-            } else {
-                0
-            };
-        };
-        // The body runs in an `async move` block, awaited here, so that its
-        // `return`s end the block rather than skip the return probe. A block
-        // takes its output type from its first `return`; the unreachable one
-        // first pins it to the declared type, so later `return`s coerce to it
-        // (`Box<u8>` to `Box<dyn Debug>`) as they would in the `async fn`.
-        // `impl Trait` cannot be written there; the type is then inferred.
-        let pin = match &sig.output {
-            ReturnType::Type(_, ty) if !contains_impl(ty) => quote! {
-                // The `if false` and its `loop {}` are dead on purpose: they
-                // only name the type, so the caller's lints are told so.
-                #[allow(unreachable_code, clippy::empty_loop, clippy::diverging_sub_expression)]
-                if false {
-                    let __anyprobe_never: #ty = loop {};
-                    return __anyprobe_never;
-                }
-            },
-            _ => TokenStream::new(),
-        };
-        // The body's statements go into the block itself: nested as a block,
-        // a body that is one expression (`{ x }`) trips `unused_braces` in
-        // the caller's crate.
-        let stmts = &block.stmts;
-        let body = if sig.unsafety.is_some() {
-            quote!(unsafe { #(#stmts)* })
-        } else {
-            quote!(#(#stmts)*)
-        };
-        quote! {
-            #start
-            #guard
-            let __anyprobe_ret = async move {
-                #pin
-                #body
-            }
-            .await;
-            #disarm
-        }
+        run_async(sig, block, &entry_ident, &entry_call, &guard, &disarm)
     } else {
-        // The closure is annotated with the return type so that `?` in the
-        // body converts errors as it does in the function. `impl Trait`
-        // cannot be written there; the type is then inferred.
-        let ret_annotation = match &sig.output {
-            ReturnType::Type(arrow, ty) if !contains_impl(ty) => quote!(#arrow #ty),
-            _ => TokenStream::new(),
-        };
-        quote! {
-            if __anyprobe::#entry_ident::enabled() {
-                #entry_call
-            }
-            #guard
-            // The body moves into a closure that is called once; in the
-            // caller's crate that can trip these two on code the caller wrote.
-            #[allow(unused_unsafe, clippy::redundant_closure_call)]
-            let __anyprobe_ret = #private::call_once(move || #ret_annotation #body);
-            #disarm
-        }
+        run_sync(sig, block, &entry_ident, &entry_call, &guard, &disarm)
     };
 
     // `symbol`: a stable, unmangled symbol for raw uprobes and DTrace's `pid`
@@ -400,6 +330,109 @@ fn expand_fn(attr: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
             __anyprobe_ret
         }
     })
+}
+
+/// The body of an `async fn` under `#[probe]`, between the probe module and
+/// the return probe: the entry probe, the guard, and the original body
+/// awaited, leaving its value in `__anyprobe_ret`.
+fn run_async(
+    sig: &Signature,
+    block: &Block,
+    entry_ident: &Ident,
+    entry_call: &TokenStream,
+    guard: &TokenStream,
+    disarm: &TokenStream,
+) -> TokenStream {
+    let private = quote!(::anyprobe::__private);
+    // The entry probe fires at the first poll, which is when an `async
+    // fn` body starts. The invocation id is drawn only if it is on.
+    let start = quote! {
+        let __anyprobe_invocation: u64 = if __anyprobe::#entry_ident::enabled() {
+            let __anyprobe_invocation = #private::next_invocation();
+            #entry_call
+            __anyprobe_invocation
+        } else {
+            0
+        };
+    };
+    // The body runs in an `async move` block, awaited here, so that its
+    // `return`s end the block rather than skip the return probe. A block
+    // takes its output type from its first `return`; the unreachable one
+    // first pins it to the declared type, so later `return`s coerce to it
+    // (`Box<u8>` to `Box<dyn Debug>`) as they would in the `async fn`.
+    // `impl Trait` cannot be written there; the type is then inferred.
+    let pin = match &sig.output {
+        ReturnType::Type(_, ty) if !contains_impl(ty) => quote! {
+            // The `if false` and its `loop {}` are dead on purpose: they
+            // only name the type, so the caller's lints are told so.
+            #[allow(unreachable_code, clippy::empty_loop, clippy::diverging_sub_expression)]
+            if false {
+                let __anyprobe_never: #ty = loop {};
+                return __anyprobe_never;
+            }
+        },
+        _ => TokenStream::new(),
+    };
+    // The body's statements go into the block itself: nested as a block,
+    // a body that is one expression (`{ x }`) trips `unused_braces` in
+    // the caller's crate. An `unsafe fn` body may call unsafe code
+    // directly (before edition 2024); inside an `async` block that needs an
+    // `unsafe` block.
+    let stmts = &block.stmts;
+    let body = if sig.unsafety.is_some() {
+        quote!(unsafe { #(#stmts)* })
+    } else {
+        quote!(#(#stmts)*)
+    };
+    quote! {
+        #start
+        #guard
+        let __anyprobe_ret = async move {
+            #pin
+            #body
+        }
+        .await;
+        #disarm
+    }
+}
+
+/// The body of a sync function under `#[probe]`, between the probe module
+/// and the return probe: the entry probe, the guard, and the original body
+/// run once, leaving its value in `__anyprobe_ret`.
+fn run_sync(
+    sig: &Signature,
+    block: &Block,
+    entry_ident: &Ident,
+    entry_call: &TokenStream,
+    guard: &TokenStream,
+    disarm: &TokenStream,
+) -> TokenStream {
+    let private = quote!(::anyprobe::__private);
+    // An `unsafe fn` body may call unsafe code directly (before edition
+    // 2024); inside a closure that needs an `unsafe` block.
+    let body = if sig.unsafety.is_some() {
+        quote!({ unsafe #block })
+    } else {
+        quote!(#block)
+    };
+    // The closure is annotated with the return type so that `?` in the
+    // body converts errors as it does in the function. `impl Trait`
+    // cannot be written there; the type is then inferred.
+    let ret_annotation = match &sig.output {
+        ReturnType::Type(arrow, ty) if !contains_impl(ty) => quote!(#arrow #ty),
+        _ => TokenStream::new(),
+    };
+    quote! {
+        if __anyprobe::#entry_ident::enabled() {
+            #entry_call
+        }
+        #guard
+        // The body moves into a closure that is called once; in the
+        // caller's crate that can trip these two on code the caller wrote.
+        #[allow(unused_unsafe, clippy::redundant_closure_call)]
+        let __anyprobe_ret = #private::call_once(move || #ret_annotation #body);
+        #disarm
+    }
 }
 
 /// Forgets the unwind guard once the body has returned.
@@ -457,6 +490,17 @@ fn check_signature(func: &ItemFn, options: &Options) -> syn::Result<()> {
         && matches!(**ty, Type::Never(_))
     {
         return unsupported(ty.span(), "functions returning `!`: they never return");
+    }
+    if sig.asyncness.is_none()
+        && let ReturnType::Type(_, ty) = &sig.output
+        && returns_future(ty)
+    {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "`#[probe]` does not support functions that return a future without being \
+             `async fn`: the probes would fire when the future is created, not when it runs; \
+             write it as an `async fn` (in a trait too, rather than with `#[async_trait]`)",
+        ));
     }
     if let Some(attr) = func
         .attrs
@@ -1014,6 +1058,46 @@ fn unwind_parts(
 /// The probe module for `probe`, named `module`, with probe name `name`.
 fn define(provider: &str, name: &str, probe: Probe) -> TokenStream {
     probes::define_named_probe(provider, name, &probe)
+}
+
+/// Whether `ty` is written as a future: `impl Future`, `dyn Future`, or one
+/// behind `Pin`, `Box` or a reference, as `#[async_trait]` writes
+/// `Pin<Box<dyn Future<Output = T> + Send + 'async_trait>>`. `IntoFuture`
+/// counts too. A type alias for a future (`BoxFuture`) is not recognized,
+/// and a future inside another type (`Vec<Pin<Box<dyn Future>>>`) is not a
+/// future the function returns.
+fn returns_future(ty: &Type) -> bool {
+    fn names_future(bounds: &Punctuated<TypeParamBound, Token![+]>) -> bool {
+        bounds.iter().any(|bound| match bound {
+            TypeParamBound::Trait(t) => t
+                .path
+                .segments
+                .last()
+                .is_some_and(|s| s.ident == "Future" || s.ident == "IntoFuture"),
+            _ => false,
+        })
+    }
+    match ty {
+        Type::ImplTrait(t) => names_future(&t.bounds),
+        Type::TraitObject(t) => names_future(&t.bounds),
+        Type::Reference(r) => returns_future(&r.elem),
+        Type::Group(g) => returns_future(&g.elem),
+        Type::Paren(p) => returns_future(&p.elem),
+        Type::Path(p) if p.qself.is_none() => {
+            let Some(last) = p.path.segments.last() else {
+                return false;
+            };
+            let PathArguments::AngleBracketed(args) = &last.arguments else {
+                return false;
+            };
+            (last.ident == "Pin" || last.ident == "Box")
+                && args.args.iter().any(|arg| match arg {
+                    GenericArgument::Type(t) => returns_future(t),
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
 }
 
 /// Whether `ty` mentions `impl Trait` anywhere.

@@ -172,6 +172,20 @@ fn exported_custom(id: u64) -> u64 {
     id + 2
 }
 
+trait Counter {
+    fn next(&self, id: u64) -> u64;
+}
+
+struct Step(u64);
+
+// A method of a non-generic trait impl has one instantiation, so one symbol.
+impl Counter for Step {
+    #[anyprobe::probe(provider = "anyprobe_test", symbol = "anyprobe_test_step_next")]
+    fn next(&self, id: u64) -> u64 {
+        id + self.0
+    }
+}
+
 #[test]
 fn async_fn____native_arguments____returns_its_value() {
     assert_eq!(block_on(natives(3, "/ab")), 33);
@@ -278,4 +292,17 @@ fn symbol____default_and_custom_names____are_exported() {
     let (a, b) = unsafe { (by_default_name(1), by_custom_name(1)) };
     assert_eq!((a, b), (2, 3));
     assert_eq!((exported(1), exported_custom(1)), (2, 3));
+}
+
+#[test]
+fn symbol____on_a_trait_impl_method____is_exported() {
+    unsafe extern "Rust" {
+        #[link_name = "anyprobe_test_step_next"]
+        fn step_next(this: &Step, id: u64) -> u64;
+    }
+    let step = Step(4);
+    // SAFETY: the name is exported by `#[probe(symbol = ...)]` on
+    // `<Step as Counter>::next`, whose signature is `fn(&Step, u64) -> u64`.
+    let by_symbol = unsafe { step_next(&step, 1) };
+    assert_eq!((by_symbol, step.next(1)), (5, 5));
 }

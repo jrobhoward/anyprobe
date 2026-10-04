@@ -55,3 +55,19 @@ fn parse_args____bad_input____says_what_is_wrong() {
         assert!(err.contains("cargo anyprobe --help"), "{args}: {err}");
     }
 }
+
+#[test]
+fn utf8_args____valid_arguments____are_kept_in_order() {
+    let args = utf8_args(["list".into(), "target/débug/app".into()]).unwrap();
+    assert_eq!(args, ["list", "target/débug/app"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn utf8_args____invalid_utf8____is_a_usage_error() {
+    use std::os::unix::ffi::OsStringExt;
+    let bad = OsString::from_vec(b"target/\xffapp".to_vec());
+    let err = utf8_args(["list".into(), bad]).unwrap_err();
+    assert!(matches!(err, Error::Usage(_)), "{err}");
+    assert!(err.to_string().contains("target/\u{fffd}app"), "{err}");
+}

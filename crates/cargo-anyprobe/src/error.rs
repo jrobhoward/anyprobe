@@ -33,6 +33,14 @@ pub enum Error {
         /// What is wrong with the record.
         source: anyprobe::RegistryError,
     },
+    /// A script cannot be written for the file.
+    #[error("{path}: {what}")]
+    Script {
+        /// The file.
+        path: PathBuf,
+        /// Why not.
+        what: String,
+    },
     /// `cargo build` could not be run, failed, or built nothing matching.
     #[error("{0}")]
     Build(String),
