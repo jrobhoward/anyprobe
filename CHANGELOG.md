@@ -90,6 +90,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `cargo anyprobe dtrace`: the D script set `strsize` to 4096, one byte short
   of the longest encoded value and its NUL, so dtrace dropped the last byte
   of a value cut at the limit. It now sets 4097.
+- Linux: `cargo anyprobe list` found no probes in a binary built with rustc
+  1.88 and linked with GNU ld, unless the binary called `anyprobe::list()`.
+  That rustc does not mark the registry records as retained, so
+  `--gc-sections` dropped them. Each probe site now refers to the registry
+  section, which keeps it in any binary with a probe site.
 
 - Linux: probes could stay off under perf and `bpftrace -c`, depending on
   how rust-lld laid out the binary. The kernel raises a semaphore by its file

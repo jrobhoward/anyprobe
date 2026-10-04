@@ -116,6 +116,15 @@ macro_rules! __anyprobe_define_probe {
 /// right if the two share a segment's address-to-offset delta; with rust-lld
 /// and `"aG"`, perf put every probe 0x1000 bytes from its `nop`.
 ///
+/// Each site also carries a `NONE` relocation against
+/// `__start_anyprobe_probes`, which emits no code. rustc 1.88, the MSRV, does
+/// not mark a `#[used]` static as retained (1.99 does), and GNU ld under
+/// `--gc-sections` keeps a C-identifier section only while live code refers
+/// to its `__start_` or `__stop_` symbol. Without the relocation, a binary
+/// that never calls [`list`](crate::list) has no registry records, and
+/// `cargo anyprobe list` finds none. The reference is weak, so it never
+/// fails a link.
+///
 /// Sites are `readonly`, not `nomem`: an attached tracer reads memory through
 /// pointer arguments at the `nop`. Under `nomem` the compiler may sink or drop
 /// a store to a buffer whose only reader is the probe.
@@ -131,6 +140,8 @@ macro_rules! __anyprobe_sdt_site {
         unsafe {
             ::core::arch::asm!(
                 "990: nop",
+                ".weak __start_anyprobe_probes",
+                ".reloc 990b, BFD_RELOC_NONE, __start_anyprobe_probes",
                 ".pushsection .note.stapsdt, \"\", \"note\"",
                 ".balign 4",
                 ".4byte 992f-991f, 994f-993f, 3",
@@ -184,6 +195,8 @@ macro_rules! __anyprobe_sdt_site {
         unsafe {
             ::core::arch::asm!(
                 "990: nop",
+                ".weak __start_anyprobe_probes",
+                ".reloc 990b, BFD_RELOC_NONE, __start_anyprobe_probes",
                 ".pushsection .note.stapsdt, \"\", \"note\"",
                 ".balign 4",
                 ".4byte 992f-991f, 994f-993f, 3",

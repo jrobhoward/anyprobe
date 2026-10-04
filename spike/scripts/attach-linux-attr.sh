@@ -244,11 +244,16 @@ for profile in "$@"; do
     '^(fetch-entry|fetch-return|slow-entry|slow-unwind|may_panic-entry|exported-entry|exported-uprobe) |^may_panic-(return|unwind)$|^done |^Attaching |^$' \
     "$aout")"
 
-  # Prints the site of every firing; the symbol names the function.
+  # Prints the site of every firing; the symbol names the function. bpftrace
+  # names the program counter `ip` on x86-64 and `pc` on aarch64.
   same="$PWD/target/$profile/examples/same_name"
   sout="$work/$profile.same.bpftrace"
+  case $(uname -m) in
+    aarch64 | arm64) pc=pc ;;
+    *) pc=ip ;;
+  esac
   $sudo timeout 60 bpftrace -c "$same $iterations 20" -e "
-    usdt:$same:same_name:new__entry { printf(\"entry %s\n\", usym(reg(\"ip\"))); }" \
+    usdt:$same:same_name:new__entry { printf(\"entry %s\n\", usym(reg(\"$pc\"))); }" \
     >"$sout" 2>&1
   expect "same_name: bpftrace attaches to all three new__entry sites" \
     grep -qx 'Attaching 3 probes...' "$sout"
