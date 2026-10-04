@@ -8,66 +8,31 @@ remove the references to it from `CLAUDE.md` and `ARCHITECTURE.md`.
 
 ## Where to pick up
 
-FreeBSD (VM) and macOS (Apple M1) have run everything in section 1 they
-can; Linux has one item left (bpftrace on `same_name`). Next is Windows:
-
-### Windows
-
-1. Re-run the attach checks. The FreeBSD commit (`e0b81e8`) added
-   `dtrace_name`, `function` and `c_types` to every `define_probe!` input;
-   nothing has attached on Windows since. Elevated Windows PowerShell,
-   `attach-windows.ps1` (spike), with `$env:ATTACH_CRATE = 'anyprobe'`,
-   and `attach-windows-attr.ps1`, each with `-ExecutionPolicy Bypass`.
-2. Run `spike/scripts/check-gaps-windows.ps1` elevated, with
-   `-ExecutionPolicy Bypass`. It was written on macOS and has never run;
-   its scratch crates pass `cargo clippy --target x86_64-pc-windows-msvc`,
-   nothing more. Expect to fix PowerShell 5.1 details on the first run.
-   - cdylib: the scratch `plug` and `host` from `check-gaps-linux.sh` as a
-     `.dll` loaded with `LoadLibraryW`. One `logman` session on the
-     `plugonly` and `shared` GUIDs must record `plugonly`'s events from the
-     DLL, and `shared` events from both the executable and the DLL. Each
-     module has its own copy of anyprobe's provider table, so `shared` is
-     two ETW registrations of one GUID in one process.
-   - limits: a scratch program fires a native `&str` per size from 1,000 to
-     70,000 bytes. `tracelogging_dynamic` cuts a counted string at 65,535
-     bytes, but ETW drops an event over 64 KB including its headers, so a
-     field cut at 65,535 bytes probably never reaches a trace: GAPS.md
-     says the field is cut, and that is likely unobservable. The script
-     checks up to 60,000 bytes arrive whole and 70,000 is dropped, and
-     prints what happened to each size in between; write the largest size
-     that arrives into GAPS.md.
-3. Update GAPS.md ("Shared libraries", "Large native strings and byte
-   slices"), add the script to `CLAUDE.md` next to the other
-   `check-gaps-*` scripts, and remove the Windows parts below.
+FreeBSD (VM), macOS (Apple M1) and Windows have run everything in section 1
+they can; Linux has one item left (bpftrace on `same_name`).
 
 ## 1. Check what GAPS.md states without a test
 
 Each item is a claim already in the docs. Run it, then keep, reword or move
 the claim.
 
-- [ ] A probe in a `cdylib` loaded with `LoadLibrary` can be traced on
-      Windows (`.dll`). Linux, FreeBSD and macOS are done. GAPS.md, "Shared
-      libraries".
 - [ ] Linux: how bpftrace handles two methods named `new` that share probe
       names (the `same_name` example) — whether it attaches to both and
       reads each one's arguments. GAPS.md, "Methods with the same name",
       says it has not been checked.
-- [ ] Windows drops an event over 64 KB (a `&str` of 70,000 bytes) and cuts
-      a string field at 65,535 bytes. GAPS.md, "Large native strings and
-      byte slices".
 
 ## 2. Platforms and hosts not yet run
 
 - [ ] The `freebsd` CI job: first run. It assumes `vmactions/freebsd-vm`
       accepts release `"15.0"`.
-- [ ] Linux AArch64: bpftrace `-p` attach, semaphore, argument reads
-      (`attach-linux.sh`, `attach-linux-attr.sh`), perf
-      (`attach-linux-perf.sh`), the disabled cost, and the 64 KiB `.probes`
-      alignment on a 64 KiB-page kernel. CI covers bpftrace on
-      `ubuntu-24.04-arm`; nobody has run it by hand.
-- [ ] Windows ARM64: the attach scripts and the disabled cost.
-- [ ] Intel Mac: `attach-macos-attr.sh` with dtrace on an x86-64 host. The
-      x86-64 build is checked without root on Apple Silicon.
+- [ ] The `windows-11-arm` jobs (build, attach, bench) in `ci.yml`: first
+      run. They assume the runner has `logman`, `wpr` and an elevated
+      session, as `windows-latest` does, and that `dtolnay/rust-toolchain`
+      installs the aarch64 toolchain there. Read the Windows ARM64 numbers
+      from the bench job into `PERFORMANCE.md`.
+- [ ] Linux AArch64: read the `ubuntu-24.04-arm` attach and bench jobs for
+      the disabled cost in `PERFORMANCE.md`. Perf (`attach-linux-perf.sh`) and
+      a 64 KiB-page kernel stay unchecked (no hardware); GAPS.md says so.
 - [ ] Whether hosted macOS runners allow `sudo dtrace` (the CI job reports
       it without failing).
 - [ ] FreeBSD on hardware and on releases other than 15.0, to replace the VM

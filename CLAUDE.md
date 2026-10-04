@@ -63,7 +63,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # `rustup target add` for each target once.
 # FreeBSD x86-64 has its own backend; the site table tests run on every host.
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
-         x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+         x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
+         aarch64-pc-windows-msvc; do
   cargo clippy --workspace --target $t --all-targets -- -Dwarnings || break
 done
 
@@ -73,7 +74,8 @@ done
 # `anyprobe-check` defines one probe per argument kind. `build --lib` reaches
 # codegen and needs no linker, so it runs for every target from any host.
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
-         x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+         x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
+         aarch64-pc-windows-msvc; do
   cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t || break
 done
 
@@ -136,10 +138,12 @@ powershell -ExecutionPolicy Bypass -File spike\scripts\capture-docs-windows.ps1
 
 # Checks of runtime claims in docs/GAPS.md that the attach scripts do not
 # cover: a killed tracer leaves no breakpoint or raised semaphore behind,
-# and (Linux, macOS) a probe in a dlopen'd cdylib can be traced. Not in CI.
+# a probe in a dlopen'd cdylib (a DLL on Windows) can be traced, and, on
+# Windows, which native string sizes ETW keeps. Not in CI.
 spike/scripts/check-gaps-linux.sh        # sudo
 spike/scripts/check-gaps-macos.sh        # sudo for dtrace and lldb; run as yourself
 sh spike/scripts/check-gaps-freebsd.sh   # sudo or doas, lldb
+powershell -ExecutionPolicy Bypass -File spike\scripts\check-gaps-windows.ps1   # elevated; DLL tracing, large strings
 
 # Disabled-probe cost (criterion), as the CI `spike bench` job runs it
 cargo bench -p anyprobe --bench disabled_cost

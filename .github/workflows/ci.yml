@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -53,13 +53,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-          targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-freebsd, x86_64-pc-windows-msvc
+          targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-freebsd, x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
       # `--all-targets` so the `cfg`-gated `*_tests.rs` files compile too.
       - name: Clippy per target
         run: |
           set -euo pipefail
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
-                   x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+                   x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
+                   aarch64-pc-windows-msvc; do
             cargo clippy --workspace --target $t --all-targets -- -Dwarnings
           done
       # `check` and `clippy` stop before codegen and never assemble an `asm!`
@@ -68,7 +69,8 @@ jobs:
         run: |
           set -euo pipefail
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin \
-                   x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc; do
+                   x86_64-apple-darwin x86_64-unknown-freebsd x86_64-pc-windows-msvc \
+                   aarch64-pc-windows-msvc; do
             cargo build -p anyprobe-check -p anyprobe-spike --lib --release --target $t
           done
       # `--cfg anyprobe_dylib` swaps the Linux semaphore load for a plain Rust
@@ -261,11 +263,12 @@ jobs:
   # means the provider saw the session (the process logged
   # entry-enabled=true) and the session captured events.
   spike-windows:
-    name: attach / ${{ matrix.crate }} / windows / ${{ matrix.profile }}
-    runs-on: windows-latest
+    name: attach / ${{ matrix.crate }} / ${{ matrix.os }} / ${{ matrix.profile }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [windows-latest, windows-11-arm]
         crate: [spike, anyprobe]
         profile: [release, release-lto]
     defaults:
@@ -315,7 +318,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

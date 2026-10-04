@@ -10,14 +10,17 @@ it costs. `README.md` lists the ones that change how the crate is used.
 x86-64 macOS builds are checked without root on an Apple Silicon host: every
 probe site rewritten by ld64 and inside its function, and `cargo anyprobe
 list` finding every probe with a site. No tracer has attached to one on an
-Intel Mac. `spike/scripts/attach-macos-attr.sh` covers it. Cost: one run on
-an Intel host.
+Intel Mac, and none is planned: the backend stays, CI keeps building it, and
+it is unsupported in the sense that nobody has checked it. `spike/scripts/attach-macos-attr.sh`
+covers it. Cost: one run on an Intel host.
 
 ### ARM64 hosts
 
 AArch64 Linux and Windows on ARM64 compile (the cross-target loops build
-them) but nobody has run a tracer against either. The Linux SDT code uses the
-64 KiB section alignment AArch64 needs; that value is untested on hardware.
+them), and CI runs the attach checks on GitHub's `ubuntu-24.04-arm` (bpftrace)
+and `windows-11-arm` (ETW) runners. Nobody has run a tracer against either by
+hand. The Linux SDT code uses the 64 KiB section alignment AArch64 needs;
+that value is untested on a kernel with 64 KiB pages.
 
 ### FreeBSD
 
@@ -75,9 +78,14 @@ up to its own string limit, so a large value costs the program nothing
 extra. On
 Windows the value is copied into the event: TraceLogging cuts a string or
 byte field at 65535 bytes, and ETW drops any event larger than 64 KB, or
-larger than the session's buffer size, without telling the program. A
-per-backend cap on native values would keep such events, at the cost of
-silently shortening them.
+larger than the session's buffer size, without telling the program. The
+event is dropped first, so the cut is never seen in a trace. Checked on
+Windows 11 with `logman` (`check-gaps-windows.ps1`): a `&str` of 65,350
+bytes was recorded whole and one of 65,400 bytes was not recorded at all,
+as were 65,535 and 70,000. Nothing in between was recorded cut. The limit
+for a string field is a little under 65,400 bytes, the rest of the 64 KB
+going to the event's headers and other fields. A per-backend cap on native
+values would keep such events, at the cost of silently shortening them.
 
 ### Six values per probe
 
@@ -188,8 +196,11 @@ cannot attach to a probe name that both the executable and a library in the
 process define: through the executable it reports "Could not resolve symbol",
 through the library "couldn't get argument 1". A probe name that only the
 library defines works. A library that gives its probes a provider name of its
-own avoids both problems. Nobody has traced a probe in a shared library on
-Windows yet. `anyprobe::list()` called from the library lists the
+own avoids both problems. On Windows a DLL loaded with `LoadLibraryW` was
+traced with one `logman` session (`check-gaps-windows.ps1`): events of a
+provider only the DLL defines were recorded, and events of a provider both
+the executable and the DLL define were recorded from each, since each module
+registers its own copy of the provider under the one GUID. `anyprobe::list()` called from the library lists the
 library's probes, and `cargo anyprobe` reads the library file like an
 executable.
 
