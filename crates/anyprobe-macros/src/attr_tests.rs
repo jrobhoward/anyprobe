@@ -75,16 +75,16 @@ fn expand____async_fn_returning_impl_trait____does_not_pin_the_type() {
 }
 
 #[test]
-fn expand____async_fn_at_six_values____collapses_for_the_invocation_id() {
-    // Three `&str` take six operands; the invocation id makes seven.
+fn expand____async_fn_at_five_values____collapses_for_the_invocation_id() {
+    // Two `&str` and a `u64` take five operands; the invocation id makes six.
     let out = expand_str(
         "provider = \"t\"",
-        "async fn f(a: &str, b: &str, c: &str) -> usize { a.len() + b.len() + c.len() }",
+        "async fn f(a: &str, b: &str, c: u64) -> usize { a.len() + b.len() + c as usize }",
     );
     assert!(out.contains("encode::object"), "{out}");
     let sync = expand_str(
         "provider = \"t\"",
-        "fn f(a: &str, b: &str, c: &str) -> usize { a.len() + b.len() + c.len() }",
+        "fn f(a: &str, b: &str, c: u64) -> usize { a.len() + b.len() + c as usize }",
     );
     assert!(!sync.contains("encode::object"), "{sync}");
 }

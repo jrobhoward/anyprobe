@@ -126,15 +126,15 @@ fn expand____unsupported_type____names_the_accepted_types() {
 }
 
 #[test]
-fn expand____seven_operands____is_rejected() {
-    let err =
-        expand_str("provider = \"app\"; fn hit(a: &str, b: &str, c: &str, d: u8);").unwrap_err();
-    assert!(err.contains("passes 7 values"), "{err}");
+fn expand____six_operands____is_rejected() {
+    let err = expand_str("provider = \"app\"; fn hit(a: &str, b: &str, c: &str);").unwrap_err();
+    assert!(err.contains("passes 6 values"), "{err}");
+    assert!(err.contains("the limit is 5"), "{err}");
 }
 
 #[test]
-fn expand____six_operands____is_accepted() {
-    assert!(expand_str("provider = \"app\"; fn hit(a: &str, b: &str, c: &[u8]);").is_ok());
+fn expand____five_operands____is_accepted() {
+    assert!(expand_str("provider = \"app\"; fn hit(a: &str, b: &[u8], c: u8);").is_ok());
 }
 
 #[test]

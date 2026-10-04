@@ -65,3 +65,30 @@ fn check_probe____over_limit____is_rejected() {
     assert!(check_probe(&"p".repeat(MAX_PROBE_LEN + 1)).is_err());
     assert_eq!(check_probe(&"p".repeat(MAX_PROBE_LEN)), Ok(()));
 }
+
+#[test]
+fn check_provider____d_reserved_word____is_rejected() {
+    let err = check_provider("string").unwrap_err();
+    assert!(err.contains("reserved in DTrace's D language"), "{err}");
+    assert!(check_provider("for").is_err());
+}
+
+#[test]
+fn check_probe____d_reserved_word____is_rejected() {
+    for name in ["int", "signed", "unsigned", "probe", "uint64_t", "xlate"] {
+        let err = check_probe(name).unwrap_err();
+        assert!(err.contains("reserved in DTrace's D language"), "{err}");
+    }
+}
+
+#[test]
+fn check_probe____d_reserved_word_as_part____is_accepted() {
+    assert_eq!(check_probe("int__entry"), Ok(()));
+    assert_eq!(check_probe("signed_ints"), Ok(()));
+    assert_eq!(check_probe("Int"), Ok(()));
+}
+
+#[test]
+fn d_reserved____list____is_sorted_without_duplicates() {
+    assert!(D_RESERVED.windows(2).all(|w| w[0] < w[1]));
+}

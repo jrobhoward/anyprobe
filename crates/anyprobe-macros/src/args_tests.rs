@@ -130,3 +130,65 @@ fn is_self_contained____names_from_the_callers_module____need_imports() {
     assert!(!is_self_contained(&parse_quote!(*const [u8; LEN])));
     assert!(!is_self_contained(&parse_quote!(*const dyn Fn())));
 }
+
+#[test]
+fn classify____option_of_str_or_bytes____is_optional() {
+    assert_eq!(kind(parse_quote!(Option<&str>)), Some(Kind::OptStr));
+    assert_eq!(kind(parse_quote!(Option<&'a str>)), Some(Kind::OptStr));
+    assert_eq!(
+        kind(parse_quote!(core::option::Option<&str>)),
+        Some(Kind::OptStr)
+    );
+    assert_eq!(
+        kind(parse_quote!(::std::option::Option<&str>)),
+        Some(Kind::OptStr)
+    );
+    assert_eq!(kind(parse_quote!(Option<&[u8]>)), Some(Kind::OptBytes));
+}
+
+#[test]
+fn classify____cstr_reference____is_cstr() {
+    assert_eq!(kind(parse_quote!(&CStr)), Some(Kind::CStr));
+    assert_eq!(kind(parse_quote!(&'static CStr)), Some(Kind::CStr));
+    assert_eq!(kind(parse_quote!(&core::ffi::CStr)), Some(Kind::CStr));
+    assert_eq!(kind(parse_quote!(&::std::ffi::CStr)), Some(Kind::CStr));
+}
+
+#[test]
+fn classify____other_options_and_cstr_spellings____are_rejected() {
+    assert_eq!(kind(parse_quote!(Option<String>)), None);
+    assert_eq!(kind(parse_quote!(Option<&mut str>)), None);
+    assert_eq!(kind(parse_quote!(Option<Option<&str>>)), None);
+    assert_eq!(kind(parse_quote!(Option<&str, u8>)), None);
+    assert_eq!(kind(parse_quote!(my::option::Option<&str>)), None);
+    assert_eq!(kind(parse_quote!(CStr)), None);
+    assert_eq!(kind(parse_quote!(&mut CStr)), None);
+    assert_eq!(kind(parse_quote!(&my::ffi::CStr)), None);
+    assert_eq!(kind(parse_quote!(&ffi::CStr)), None);
+}
+
+#[test]
+fn operands____optional_str____are_pointer_then_length_with_null_for_none() {
+    let arg: Ident = parse_quote!(name);
+    let ops: Vec<String> = Kind::OptStr
+        .operands(&arg)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(ops.len(), 2);
+    assert!(ops[0].contains("null"), "{}", ops[0]);
+    assert!(ops[1].contains(":: None => 0"), "{}", ops[1]);
+}
+
+#[test]
+fn operands____cstr____is_one_pointer() {
+    let arg: Ident = parse_quote!(name);
+    let ops: Vec<String> = Kind::CStr
+        .operands(&arg)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(ops, ["name . as_ptr ()"]);
+    assert_eq!(Kind::CStr.c_types(), ["char *"]);
+    assert_eq!(Kind::CStr.sdt_sizes(), ["8"]);
+}

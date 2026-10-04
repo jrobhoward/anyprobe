@@ -22,8 +22,10 @@ mod probes;
 ///     fn request__done(id: u64, status: u16, ok: bool);
 /// }
 ///
-/// if request__start::enabled() {
-///     request__start::fire(7, "/index.html");
+/// anyprobe::fire!(request__start(7, "/index.html"));
+///
+/// if request__done::enabled() {
+///     request__done::fire(7, 200, true);
 /// }
 /// ```
 ///
@@ -33,7 +35,9 @@ mod probes;
 /// - `enabled() -> bool`: whether a tracer is attached to the probe. Keep
 ///   any work done only for the probe inside this check.
 /// - `fire(...)`: fires the probe with the declared arguments. Every inlined
-///   copy of `fire` is a separate probe site under the same name.
+///   copy of `fire` is a separate probe site under the same name. Its
+///   arguments are evaluated on every call; `anyprobe::fire!(probe(...))`
+///   evaluates them only when `enabled()` is true.
 /// - `PROVIDER` and `NAME`: the provider and probe names.
 ///
 /// # Provider
@@ -61,8 +65,10 @@ mod probes;
 /// | `char` | 1, the code point |
 /// | `*const T`, `*mut T` | 1, the address |
 /// | `&str`, `&[u8]` | 2: pointer and length |
+/// | `Option<&str>`, `Option<&[u8]>` | 2: pointer and length; a null pointer and 0 for `None` |
+/// | `&CStr` | 1, a pointer to NUL-terminated bytes |
 ///
-/// At most six values per probe. Types are recognized as written, so a type
+/// At most five values per probe. Types are recognized as written, so a type
 /// alias is rejected even if it names one of these. Probes return nothing and
 /// cannot be generic, `async`, `const`, `unsafe` or `extern`; only doc, `cfg`
 /// and lint attributes are allowed on them.
@@ -137,7 +143,7 @@ pub fn probes(input: TokenStream) -> TokenStream {
 /// completes. `invocation` is a number unique to the call, so a tracer can
 /// pair an entry with its return when calls interleave; it is 0 on the
 /// return (and unwind) probe of a call that started while the entry probe
-/// was off. It takes one of the six values. With `unwind`, the unwind probe
+/// was off. It takes one of the five values. With `unwind`, the unwind probe
 /// is `fetch__unwind(invocation, panicking)`: `panicking` is 1 for a panic,
 /// 0 for a future dropped before completion.
 ///
@@ -154,9 +160,9 @@ pub fn probes(input: TokenStream) -> TokenStream {
 /// Encoded values reach the tracer as a string (pointer and length),
 /// followed by a NUL byte, and are cut at 4096 bytes; a cut value ends with
 /// `...`. When the arguments
-/// would take more than six values (`&str`, `&[u8]` and encoded arguments
-/// take two), they are passed instead as one JSON object of all of them,
-/// `{"id":1,"path":"/x",...}`.
+/// would take more than five values (`&str`, `&[u8]`, their `Option`s and
+/// encoded arguments take two), they are passed instead as one JSON object
+/// of all of them, `{"id":1,"path":"/x",...}`, where `None` is `null`.
 ///
 /// # Not supported
 ///

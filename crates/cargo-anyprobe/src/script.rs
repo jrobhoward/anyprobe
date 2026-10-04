@@ -60,7 +60,10 @@ pub fn bpftrace(binary: &Path, groups: &[Group<'_>]) -> String {
         for (i, arg) in indices(args.unwrap_or_default()) {
             let (spec, value) = match arg.ty {
                 t if t.is_text() => ("%s", format!("str(arg{i}, arg{})", i + 1)),
-                ArgType::Bytes => ("%r", format!("buf(arg{i}, arg{})", i + 1)),
+                // `None` has length 0, so nothing is read and it prints empty.
+                ArgType::OptStr => ("%s", format!("str(arg{i}, arg{})", i + 1)),
+                ArgType::Bytes | ArgType::OptBytes => ("%r", format!("buf(arg{i}, arg{})", i + 1)),
+                ArgType::CStr => ("%s", format!("str(arg{i})")),
                 ArgType::Ptr => ("0x%lx", format!("arg{i}")),
                 t if t.is_signed() => ("%ld", format!("(int64)arg{i}")),
                 _ => ("%lu", format!("arg{i}")),
@@ -105,7 +108,14 @@ pub fn dtrace(binary: &Path, groups: &[Group<'_>]) -> String {
         for (i, arg) in indices(args.unwrap_or_default()) {
             let (spec, value) = match arg.ty {
                 t if t.is_text() => ("%s", format!("copyinstr(arg{i}, arg{})", i + 1)),
-                ArgType::Bytes => ("<%u bytes>", format!("arg{}", i + 1)),
+                // `copyinstr` of a null pointer is an error that drops the
+                // whole clause.
+                ArgType::OptStr => (
+                    "%s",
+                    format!("arg{i} ? copyinstr(arg{i}, arg{}) : \"(none)\"", i + 1),
+                ),
+                ArgType::Bytes | ArgType::OptBytes => ("<%u bytes>", format!("arg{}", i + 1)),
+                ArgType::CStr => ("%s", format!("copyinstr(arg{i})")),
                 ArgType::Ptr => ("0x%x", format!("arg{i}")),
                 t if t.is_signed() => ("%d", format!("arg{i}")),
                 _ => ("%u", format!("arg{i}")),

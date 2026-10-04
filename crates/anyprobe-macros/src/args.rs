@@ -25,6 +25,14 @@ pub(crate) enum Kind {
     Str,
     /// `&[u8]`.
     Bytes,
+    /// `Option<&str>`: like `&str`, with a null pointer and length 0 for
+    /// `None`.
+    OptStr,
+    /// `Option<&[u8]>`: like `&[u8]`, with a null pointer and length 0 for
+    /// `None`.
+    OptBytes,
+    /// `&CStr`: one pointer to NUL-terminated bytes.
+    CStr,
 }
 
 const UNSIGNED: [&str; 5] = ["u8", "u16", "u32", "u64", "usize"];
@@ -32,7 +40,7 @@ const SIGNED: [&str; 5] = ["i8", "i16", "i32", "i64", "isize"];
 
 /// The types the macro accepts, for error messages.
 pub(crate) const ACCEPTED: &str = "u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, \
-     char, *const T, *mut T, &str or &[u8]";
+     char, *const T, *mut T, &str, &[u8], Option<&str>, Option<&[u8]> or &CStr";
 
 fn single_ident(ty: &Type) -> Option<String> {
     match ty {
@@ -66,11 +74,69 @@ pub(crate) fn classify(ty: &Type) -> Option<Kind> {
         Type::Reference(r) if r.mutability.is_none() => match &*r.elem {
             Type::Slice(s) if single_ident(&s.elem).as_deref() == Some("u8") => Some(Kind::Bytes),
             elem if single_ident(elem).as_deref() == Some("str") => Some(Kind::Str),
+            elem if is_cstr(elem) => Some(Kind::CStr),
+            _ => None,
+        },
+        Type::Path(_) => match option_of(ty).and_then(classify) {
+            Some(Kind::Str) => Some(Kind::OptStr),
+            Some(Kind::Bytes) => Some(Kind::OptBytes),
             _ => None,
         },
         Type::Group(g) => classify(&g.elem),
         Type::Paren(p) => classify(&p.elem),
         _ => None,
+    }
+}
+
+/// `ty` without the invisible groups and parentheses around it.
+fn unwrap_group(ty: &Type) -> &Type {
+    match ty {
+        Type::Group(g) => unwrap_group(&g.elem),
+        Type::Paren(p) => unwrap_group(&p.elem),
+        _ => ty,
+    }
+}
+
+/// The `T` of `Option<T>`, spelled `Option` or with its full path through
+/// `core` or `std`.
+fn option_of(ty: &Type) -> Option<&Type> {
+    let Type::Path(p) = ty else { return None };
+    if p.qself.is_some() || !path_is(&p.path, "option", "Option") {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(a) = &p.path.segments.last()?.arguments else {
+        return None;
+    };
+    match a.args.iter().collect::<Vec<_>>().as_slice() {
+        [syn::GenericArgument::Type(t)] => Some(t),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is `CStr`, spelled `CStr` or with its full path through
+/// `core::ffi` or `std::ffi`.
+fn is_cstr(ty: &Type) -> bool {
+    match ty {
+        Type::Path(p) => {
+            p.qself.is_none()
+                && p.path.segments.iter().all(|s| s.arguments.is_none())
+                && path_is(&p.path, "ffi", "CStr")
+        }
+        Type::Group(g) => is_cstr(&g.elem),
+        Type::Paren(p) => is_cstr(&p.elem),
+        _ => false,
+    }
+}
+
+/// Whether `path` is `name` alone, or `core::module::name` or
+/// `std::module::name`, with or without a leading `::`. Generic arguments
+/// on the last segment are not compared.
+fn path_is(path: &syn::Path, module: &str, name: &str) -> bool {
+    let idents: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    match idents.as_slice() {
+        [last] => path.leading_colon.is_none() && last == name,
+        [root, m, last] => (root == "core" || root == "std") && m == module && last == name,
+        _ => false,
     }
 }
 
@@ -119,12 +185,22 @@ pub(crate) fn is_self_contained(ty: &Type) -> bool {
 
 impl Kind {
     /// The parameter type `fire` declares. References lose any lifetime, so
-    /// the generated signature needs no generic parameters; other types keep
-    /// the caller's spelling.
+    /// the generated signature needs no generic parameters; `Option`s are
+    /// written with their full path; other types keep the caller's spelling.
     pub(crate) fn param_type(self, declared: &Type) -> TokenStream {
         match self {
             Kind::Str => quote!(&str),
             Kind::Bytes => quote!(&[u8]),
+            Kind::OptStr => quote!(::core::option::Option<&str>),
+            Kind::OptBytes => quote!(::core::option::Option<&[u8]>),
+            // The caller's spelling, so an import of `CStr` is used.
+            Kind::CStr => match unwrap_group(declared) {
+                Type::Reference(r) => {
+                    let elem = &r.elem;
+                    quote!(&#elem)
+                }
+                _ => quote!(#declared),
+            },
             _ => quote!(#declared),
         }
     }
@@ -139,6 +215,17 @@ impl Kind {
             Kind::Signed(_) => vec![quote!(#arg as i64)],
             Kind::Pointer => vec![quote!(#arg as usize as u64)],
             Kind::Str | Kind::Bytes => vec![quote!(#arg.as_ptr()), quote!(#arg.len() as u64)],
+            Kind::OptStr | Kind::OptBytes => vec![
+                quote!(match #arg {
+                    ::core::option::Option::Some(v) => v.as_ptr(),
+                    ::core::option::Option::None => ::core::ptr::null(),
+                }),
+                quote!(match #arg {
+                    ::core::option::Option::Some(v) => v.len() as u64,
+                    ::core::option::Option::None => 0,
+                }),
+            ],
+            Kind::CStr => vec![quote!(#arg.as_ptr())],
         }
     }
 
@@ -146,7 +233,7 @@ impl Kind {
     pub(crate) fn sdt_sizes(self) -> &'static [&'static str] {
         match self {
             Kind::Signed(_) => &["-8"],
-            Kind::Str | Kind::Bytes => &["8", "8"],
+            Kind::Str | Kind::Bytes | Kind::OptStr | Kind::OptBytes => &["8", "8"],
             _ => &["8"],
         }
     }
@@ -157,8 +244,9 @@ impl Kind {
             Kind::Unsigned(_) | Kind::Bool | Kind::Char => &["uint64_t"],
             Kind::Signed(_) => &["int64_t"],
             Kind::Pointer => &["uintptr_t"],
-            Kind::Str => &["char *", "uint64_t"],
-            Kind::Bytes => &["uint8_t *", "uint64_t"],
+            Kind::Str | Kind::OptStr => &["char *", "uint64_t"],
+            Kind::Bytes | Kind::OptBytes => &["uint8_t *", "uint64_t"],
+            Kind::CStr => &["char *"],
         }
     }
 
@@ -172,6 +260,9 @@ impl Kind {
             Kind::Pointer => "ptr",
             Kind::Str => "str",
             Kind::Bytes => "bytes",
+            Kind::OptStr => "opt_str",
+            Kind::OptBytes => "opt_bytes",
+            Kind::CStr => "cstr",
         }
     }
 
@@ -188,6 +279,10 @@ impl Kind {
             Kind::Pointer => ("add_u64", quote!(#arg as usize as u64), "Hex"),
             Kind::Str => ("add_str8", quote!(#arg), "Utf8"),
             Kind::Bytes => ("add_binary", quote!(#arg), "Default"),
+            // ETW has no absent string: `None` is recorded as an empty one.
+            Kind::OptStr => ("add_str8", quote!(#arg.unwrap_or("")), "Utf8"),
+            Kind::OptBytes => ("add_binary", quote!(#arg.unwrap_or(&[])), "Default"),
+            Kind::CStr => ("add_str8", quote!(#arg.to_bytes()), "Utf8"),
         }
     }
 }

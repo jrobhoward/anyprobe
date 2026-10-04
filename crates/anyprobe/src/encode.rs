@@ -43,6 +43,8 @@ pub enum Value<'a> {
     Str(&'a str),
     /// A `&[u8]`.
     Bytes(&'a [u8]),
+    /// An absent value, `None` of an `Option<&str>` or `Option<&[u8]>`.
+    Null,
     /// A value encoded with `{:?}`.
     Debug(&'a dyn Debug),
     /// A value encoded as JSON.
@@ -60,6 +62,7 @@ impl Debug for Value<'_> {
             Value::Ptr(v) => f.debug_tuple("Ptr").field(v).finish(),
             Value::Str(v) => f.debug_tuple("Str").field(v).finish(),
             Value::Bytes(v) => f.debug_tuple("Bytes").field(v).finish(),
+            Value::Null => f.write_str("Null"),
             Value::Debug(v) => f.debug_tuple("Debug").field(v).finish(),
             #[cfg(feature = "serde")]
             Value::Serde(_) => f.write_str("Serde(..)"),
@@ -110,6 +113,7 @@ impl<'a> Value<'a> {
             }
             Value::Str(s) => json_string(out, s),
             Value::Bytes(bytes) => json_bytes(out, bytes),
+            Value::Null => out.write_str("null"),
             Value::Debug(v) => {
                 // Escapes as it goes, so the output is never held twice.
                 out.write_char('"')

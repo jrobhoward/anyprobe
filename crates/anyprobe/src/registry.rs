@@ -286,7 +286,9 @@ impl Origin {
 ///
 /// On Linux, macOS and FreeBSD every integer, `bool`, `char` and pointer is
 /// one 64-bit value, zero-extended (sign-extended for signed integers); ETW
-/// keeps the width. `str` and `bytes` are two values, a pointer and a length. The
+/// keeps the width. `str` and `bytes` are two values, a pointer and a length,
+/// and so are `opt_str` and `opt_bytes`, whose pointer is null (and length 0)
+/// for `None`. `cstr` is one value, a pointer to NUL-terminated bytes. The
 /// encoded types are UTF-8 strings passed like `str`, with a NUL after the
 /// last byte, so tools that read up to a NUL see the same text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -322,6 +324,14 @@ pub enum ArgType {
     Str,
     /// `&[u8]`: pointer and length.
     Bytes,
+    /// `Option<&str>`: pointer and length; a null pointer for `None`. ETW
+    /// records `None` as an empty string.
+    OptStr,
+    /// `Option<&[u8]>`: pointer and length; a null pointer for `None`. ETW
+    /// records `None` as no bytes.
+    OptBytes,
+    /// `&CStr`: a pointer to NUL-terminated bytes.
+    CStr,
     /// JSON text, from `serde(..)` or `ret = serde`.
     Json,
     /// `{:?}` text, from `debug(..)` or `ret = debug`.
@@ -330,11 +340,11 @@ pub enum ArgType {
     /// argument's type.
     Auto,
     /// A JSON object holding every argument, when they would take more than
-    /// six values.
+    /// five values.
     Object,
 }
 
-const ARG_TYPES: [(ArgType, &str); 19] = [
+const ARG_TYPES: [(ArgType, &str); 22] = [
     (ArgType::U8, "u8"),
     (ArgType::U16, "u16"),
     (ArgType::U32, "u32"),
@@ -350,6 +360,9 @@ const ARG_TYPES: [(ArgType, &str); 19] = [
     (ArgType::Ptr, "ptr"),
     (ArgType::Str, "str"),
     (ArgType::Bytes, "bytes"),
+    (ArgType::OptStr, "opt_str"),
+    (ArgType::OptBytes, "opt_bytes"),
+    (ArgType::CStr, "cstr"),
     (ArgType::Json, "json"),
     (ArgType::Debug, "debug"),
     (ArgType::Auto, "auto"),
@@ -358,7 +371,8 @@ const ARG_TYPES: [(ArgType, &str); 19] = [
 
 impl ArgType {
     /// The name the record uses: the Rust type for the native ones, else
-    /// `ptr`, `str`, `bytes`, `json`, `debug`, `auto` or `object`.
+    /// `ptr`, `str`, `bytes`, `opt_str`, `opt_bytes`, `cstr`, `json`,
+    /// `debug`, `auto` or `object`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         ARG_TYPES
@@ -375,7 +389,7 @@ impl ArgType {
     /// 2 for a pointer and length, else 1.
     #[must_use]
     pub fn slots(self) -> usize {
-        if self.is_text() || self == ArgType::Bytes {
+        if self.is_text() || matches!(self, ArgType::Bytes | ArgType::OptStr | ArgType::OptBytes) {
             2
         } else {
             1

@@ -34,10 +34,10 @@ fn handle(id: u64, path: &str, opts: &Options) -> u32 {
 ```
 
 This defines the probes `myapp:handle__entry(id, path, opts)` and
-`myapp:handle__return(ret)`. Integers, `bool`, `char`, raw pointers, `&str`
-and `&[u8]` are passed as they are. Other arguments are listed in
-`debug(..)` (encoded with `{:?}`), `serde(..)` (encoded as JSON) or
-`skip(..)`; an unlisted one is a compile error that names these fixes. The
+`myapp:handle__return(ret)`. Integers, `bool`, `char`, raw pointers, `&str`,
+`&[u8]`, their `Option`s and `&CStr` are passed as they are. Other arguments
+are listed in `debug(..)` (encoded with `{:?}`), `serde(..)` (encoded as
+JSON) or `skip(..)`; an unlisted one is a compile error that names these fixes. The
 `autoref` feature picks an encoding for unlisted arguments instead. Encoding
 runs only while a tracer is attached.
 
@@ -76,17 +76,47 @@ anyprobe::probes! {
 }
 
 fn handle(id: u64, path: &str) {
-    if request__start::enabled() {
-        request__start::fire(id, path);
-    }
+    anyprobe::fire!(request__start(id, path));
     // ...
 }
 ```
 
-Each probe becomes a module with `enabled()` and `fire(...)`. Keep anything
-that costs time to compute inside the `enabled()` branch. `probes!` takes
-the native types only, up to six values per probe (`&str` and `&[u8]` count
-as two: pointer and length).
+Each probe becomes a module with `enabled()` and `fire(...)`.
+`anyprobe::fire!` calls `fire` only when `enabled()` is true, so its
+arguments are computed only while a tracer is attached. Calling `enabled()`
+directly suits one check that guards several probes or other work; `fire`
+on its own evaluates its arguments every time. `probes!` takes
+the native types only, up to five values per probe (`&str`, `&[u8]` and
+their `Option`s count as two: pointer and length; `None` is a null pointer).
+
+`anyprobe::next_id()` returns an id that is unique in the process and never
+0. Passing it to related probes lets a tracer pair them when calls
+interleave:
+
+```rust
+anyprobe::probes! {
+    provider = "myapp";
+
+    pub fn job__start(id: u64, name: &str);
+    pub fn job__done(id: u64, ok: bool);
+}
+
+fn run(name: &str) {
+    let id = if job__start::enabled() {
+        let id = anyprobe::next_id();
+        job__start::fire(id, name);
+        id
+    } else {
+        0
+    };
+    // ...
+    if job__done::enabled() {
+        job__done::fire(id, true);
+    }
+}
+```
+
+An id of 0 means the first probe was off when the call started.
 
 The provider defaults to the crate name. DTrace does not allow one that ends
 in a digit, so such a crate name gets a `_` after it: the probes of a crate

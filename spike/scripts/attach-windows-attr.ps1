@@ -12,7 +12,9 @@ provider for three seconds with `logman`, and decodes the trace with
   - a `serde` argument is recorded as its JSON;
   - a `debug` return value is recorded as its `{:?}` output;
   - arguments collapsed into one object are recorded as that JSON object;
-  - `debug(self)` on a method is recorded as the receiver's `{:?}` output.
+  - `debug(self)` on a method is recorded as the receiver's `{:?}` output;
+  - five native values, the most a probe passes, are recorded as written;
+  - `Option<&str>` and `&CStr` arguments are recorded as their text.
 Encoding runs only after the enabled check, so any encoded value in the trace
 shows that the session turned the check on.
 For `attr_async` it checks that:
@@ -161,6 +163,10 @@ try {
                 ($trace -match ">\{${q}id${q}:[0-9]+,${q}a${q}:${q}x${q},${q}b${q}:${q}y${q},${q}c${q}:${q}z${q},${q}tags${q}:")
             Expect 'debug(self) and a native argument' `
                 ($trace -match '>Counter \{ n: [0-9]+ \}<')
+            Expect 'five native values, the fifth on its own' `
+                (($trace -match 'Name="neg"[^>]*>-12<') -and ($trace -match 'Name="last"[^>]*>16<'))
+            Expect 'Option<&str>, Option<&[u8]> and &CStr' `
+                (($trace -match 'Name="name"[^>]*>opt<') -and ($trace -match 'Name="label"[^>]*>cee<'))
         }
         if ($script:profileFailed) { Show-Failure $script:exampleXml }
 
@@ -253,7 +259,7 @@ try {
         $script:exampleLog = $null
         cargo build -q -p cargo-anyprobe
         $cli = 'target\debug\cargo-anyprobe.exe'
-        foreach ($pair in @(@('attr', 8), @('attr_async', 10))) {
+        foreach ($pair in @(@('attr', 12), @('attr_async', 10))) {
             $ex = $pair[0]; $count = $pair[1]
             $listed = & $cli list "target\$p\examples\$ex.exe" 2>&1
             $last = ($listed | Select-Object -Last 1)

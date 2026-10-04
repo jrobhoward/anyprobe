@@ -57,7 +57,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `bool`, `char`, raw pointers, `&str`, `&[u8]` and references to scalars
   are passed natively; any other argument must be listed. Encoded values are
   NUL-terminated strings, cut at 4096 bytes; a cut value ends with `...`.
-  Arguments that would take more than six values are passed as one JSON
+  Arguments that would take more than five values are passed as one JSON
   object.
 - `Native`: lets `native(..)` pass a type alias or newtype as one 64-bit
   value.
@@ -68,10 +68,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   process, instead of one per `probes!` block.
 - `probes!`: defines probes, each a module with `enabled()` and `fire(...)`.
   Arguments are integers up to 64 bits, `bool`, raw pointers, `&str` and
-  `&[u8]`, at most six values per probe. The provider defaults to the crate
-  name, with a `_` after it when it ends in a digit, which DTrace does not
-  allow (`http2` becomes `http2_`); `provider = "..."` sets another, and one
-  that ends in a digit is rejected. The same default applies to `#[probe]`.
+  `&[u8]`, at most five values per probe, since DTrace on arm64 macOS reads
+  a sixth value as 0. The provider defaults to the crate name, with a `_`
+  after it when it ends in a digit, which DTrace does not allow (`http2`
+  becomes `http2_`); `provider = "..."` sets another, and one that ends in a
+  digit is rejected. The same default applies to `#[probe]`.
 - Linux (x86-64, AArch64): SystemTap SDT notes with semaphores, for bpftrace
   and perf. `--cfg anyprobe_dylib` for Rust `dylib` crates.
 - macOS (x86-64, AArch64): DTrace USDT probes built by the linker.
@@ -79,6 +80,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   first enabled check of any of its probes.
 - Every other target, FreeBSD on architectures other than x86-64 included:
   probes compile to nothing.
+- `anyprobe::next_id()`: an id unique in the process and never 0, to pass to
+  related `probes!` probes (the start and end of a request) so a tracer can
+  pair them. `#[probe]` takes the invocation ids of an `async fn` from the
+  same counter.
+- `anyprobe::fire!(probe(args))`: fires a `probes!` probe only when it is
+  enabled, so its arguments are evaluated only while a tracer is attached.
+  It expands to the `if probe::enabled() { probe::fire(..) }` guard.
+- Native `Option<&str>`, `Option<&[u8]>` and `&CStr` arguments, in `probes!`
+  and `#[probe]`. An `Option` is a pointer and a length, with a null pointer
+  for `None` (an empty field on Windows, where ETW has no absent one); a
+  `&CStr` is one pointer to its NUL-terminated bytes, which perf and gdb read
+  as written. The registry types are `opt_str`, `opt_bytes` and `cstr`, and
+  the D scripts `cargo anyprobe` writes do not `copyinstr` a null pointer.
+  Under `autoref`, an unlisted `#[probe]` argument of these types was encoded
+  as JSON or `{:?}` and is now passed natively.
 
 ### Fixed
 
@@ -103,3 +119,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   semaphores' section now starts on a page of its own (4 KiB on x86-64,
   64 KiB on AArch64), at the cost of up to that much padding. `bpftrace -p`
   was not affected.
+- Linux: a probe in a function that `--gc-sections` removed, such as a
+  probed `pub fn` in a library the program never calls, left an SDT note
+  behind. With rust-lld the note named an address in the ELF header, outside
+  the code. The notes are now retained, which keeps the function in
+  the binary as GNU ld already did: a library whose probed functions were
+  all unused grew by 19.5 KB in the fixture that checks this. The same
+  problem is open in the `usdt` crate as issue #498.
+- macOS: a provider or probe named after a word D reserves, such as `int`,
+  `string` or `uint64_t`, failed to link with "Could not compile
+  reconstructed dtrace script". `probes!` and `#[probe]` now reject these
+  names with a compile error on every target. Kernel type names such as
+  `size_t` still fail on macOS only; see `docs/GAPS.md`.

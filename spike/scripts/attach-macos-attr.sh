@@ -23,7 +23,9 @@
 #     argument reads as its JSON, and as the same text when read up to its
 #     NUL; arguments collapsed into one object read as that JSON object;
 #     `debug(self)` reads as the receiver's `{:?}` output. A `debug` return
-#     value reads as `Ok(5)` 10 times and `Err("odd N")` 10 times;
+#     value reads as `Ok(5)` 10 times and `Err("odd N")` 10 times. Five
+#     native values, the most a probe passes, read as written, the fifth
+#     included;
 #   - for `same_name`, dtrace reads each function's arguments as that
 #     function declares them, 20 times each, and `new__return` fires 60
 #     times;
@@ -113,14 +115,14 @@ for profile in "$@"; do
 
   gen="$work/gen"
   "$cli" list "$attr" >"$gen.attr.list" 2>&1
-  expect "cargo anyprobe list: attr has 8 probes, each with a site" \
-    bash -c "tail -1 '$gen.attr.list' | grep -qx '8 probes in 1 provider' && ! grep -q 'no site' '$gen.attr.list'"
+  expect "cargo anyprobe list: attr has 12 probes, each with a site" \
+    bash -c "tail -1 '$gen.attr.list' | grep -qx '12 probes in 1 provider' && ! grep -q 'no site' '$gen.attr.list'"
   "$cli" list "$async" >"$gen.async.list" 2>&1
   expect "cargo anyprobe list: attr_async has 10 probes, each with a site" \
     bash -c "tail -1 '$gen.async.list' | grep -qx '10 probes in 1 provider' && ! grep -q 'no site' '$gen.async.list'"
   "$cli" dtrace "$attr" >"$gen.attr.d" 2>"$gen.attr.err"
   expect "cargo anyprobe dtrace: one clause per attr probe" \
-    test "$(grep -c '^attr\$target:::' "$gen.attr.d")" -eq 8
+    test "$(grep -c '^attr\$target:::' "$gen.attr.d")" -eq 12
   "$cli" dtrace "$async" >"$gen.async.d" 2>"$gen.async.err"
   expect "cargo anyprobe dtrace: one clause per attr_async probe" \
     test "$(grep -c '^attr_async\$target:::' "$gen.async.d")" -eq 10
@@ -138,6 +140,13 @@ for profile in "$@"; do
       attr$target:::wide-entry { printf("wide-entry %s\n", copyinstr(arg0, arg1)); }
       attr$target:::counter_bump-entry {
         printf("bump-entry %s %d\n", copyinstr(arg0, arg1), arg2);
+      }
+      attr$target:::five-entry {
+        printf("five-entry %d %d %d %d %d\n", arg0, arg1, arg2, arg3, arg4);
+      }
+      attr$target:::optional-entry {
+        printf("optional-entry %s|%d|%s\n",
+          arg0 ? copyinstr(arg0, arg1) : "(none)", arg3, copyinstr(arg4));
       }' >"$out" 2>&1
     n=$iterations
     expect "native arguments: id and path" lines "$n" '^lookup-entry [0-9]+ /index$' "$out"
@@ -152,8 +161,14 @@ for profile in "$@"; do
       '^wide-entry \{"id":[0-9]+,"a":"x","b":"y","c":"z","tags":"\[\\"t\\"\]"\}$' "$out"
     expect "debug(self) and a native argument" \
       lines "$n" '^bump-entry Counter \{ n: [0-9]+ \} 1$' "$out"
+    expect "five native values, the fifth on its own" \
+      lines "$n" '^five-entry [0-9]+ -12 13 1 16$' "$out"
+    expect "Option<&str> Some, Option<&[u8]> None, &CStr" \
+      lines $((n / 2)) '^optional-entry opt\|0\|cee$' "$out"
+    expect "Option<&str> None, Option<&[u8]> Some, &CStr" \
+      lines $((n / 2)) '^optional-entry \(none\)\|1\|cee$' "$out"
     expect "nothing unexpected" test -z "$(grep -vE \
-      "^(lookup-entry|lookup-return|query-entry|query-entry-nul|query-return|wide-entry|bump-entry) |^(pid|backend)=|^done |^\$|$sip" \
+      "^(lookup-entry|lookup-return|query-entry|query-entry-nul|query-return|wide-entry|bump-entry|five-entry|optional-entry) |^(pid|backend)=|^done |^\$|$sip" \
       "$out")"
 
     sout="$work/same.dtrace"
@@ -246,6 +261,13 @@ for profile in "$@"; do
     expect "generated: debug(self)" bash -c "
       [ \$(grep -cE '^attr:counter_bump__entry self=Counter \{ n: [0-9]+ \} by=1\$' '$gout') -eq $n ] &&
       [ \$(grep -cE '^attr:counter_bump__return\$' '$gout') -eq $n ]"
+    expect "generated: five native values" bash -c "
+      [ \$(grep -cE '^attr:five__entry id=[0-9]+ neg=-12 c=13 on=1 last=16\$' '$gout') -eq $n ] &&
+      [ \$(grep -cE '^attr:five__return\$' '$gout') -eq $n ]"
+    expect "generated: optional strings and bytes, C string" bash -c "
+      [ \$(grep -cE '^attr:optional__entry name=opt key=<0 bytes> label=cee\$' '$gout') -eq $((n / 2)) ] &&
+      [ \$(grep -cE '^attr:optional__entry name=\(none\) key=<1 bytes> label=cee\$' '$gout') -eq $((n / 2)) ] &&
+      [ \$(grep -cE '^attr:optional__return\$' '$gout') -eq $n ]"
     expect "generated: attr, nothing unexpected" test -z "$(grep -vE \
       "^attr:[a-z_]+__(entry|return)( |\$)|^(pid|backend)=|^done |^\$|$sip" "$gout")"
 

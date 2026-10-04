@@ -16,6 +16,12 @@
 //!   value as `{:?}`.
 //! - `wide__entry(args)`: more arguments than fit, as one JSON object.
 //! - `counter_bump__entry(self, by)`: a method with `debug(self)`.
+//! - `five__entry(id, neg, c, on, last)`: five native values, the most a
+//!   probe passes in registers, called with `(id, -12, 13, true, 16)`.
+//!   The fifth register is checked on its own value.
+//! - `optional__entry(name, key, label)`: `Option<&str>`, `Option<&[u8]>`
+//!   and `&CStr` passed natively. Even ids pass `(Some("opt"), None,
+//!   c"cee")`, odd ids `(None, Some(b"k"), c"cee")`.
 
 use std::io::Write;
 use std::time::Duration;
@@ -43,6 +49,16 @@ fn query(id: u64, q: &Query) -> Result<u32, String> {
 #[anyprobe::probe(provider = "attr", debug(tags))]
 fn wide(id: u64, a: &str, b: &str, c: &str, tags: Vec<&str>) -> usize {
     id as usize + a.len() + b.len() + c.len() + tags.len()
+}
+
+#[anyprobe::probe(provider = "attr")]
+fn five(id: u64, neg: i64, c: u32, on: bool, last: u64) -> u64 {
+    id ^ neg.unsigned_abs() ^ u64::from(c) ^ u64::from(on) ^ last
+}
+
+#[anyprobe::probe(provider = "attr")]
+fn optional(name: Option<&str>, key: Option<&[u8]>, label: &std::ffi::CStr) -> usize {
+    name.map_or(0, str::len) + key.map_or(0, <[u8]>::len) + label.to_bytes().len()
 }
 
 #[derive(Debug)]
@@ -84,6 +100,13 @@ fn main() {
         checksum ^= u64::from(query(i, &q).unwrap_or(0));
         checksum ^= wide(i, "x", "y", "z", vec!["t"]) as u64;
         counter.bump(1);
+        checksum ^= five(i, -12, 13, true, 16);
+        let (name, key) = if i.is_multiple_of(2) {
+            (Some("opt"), None)
+        } else {
+            (None, Some(&b"k"[..]))
+        };
+        checksum ^= optional(name, key, c"cee") as u64;
 
         i += 1;
         std::thread::sleep(interval);

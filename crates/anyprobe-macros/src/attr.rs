@@ -608,7 +608,7 @@ fn native_shape(ty: &Type, value: &TokenStream) -> Option<Shape> {
     if let Some(kind) = args::classify(&r.elem) {
         let expr = match kind {
             Kind::Pointer => quote!(*#value as *const ()),
-            Kind::Str | Kind::Bytes => return None,
+            Kind::Str | Kind::Bytes | Kind::OptStr | Kind::OptBytes | Kind::CStr => return None,
             _ => quote!(*#value),
         };
         return Some(Shape::Native { kind, expr });
@@ -640,6 +640,9 @@ fn param_type(kind: Kind) -> TokenStream {
         Kind::Pointer => quote!(*const ()),
         Kind::Str => quote!(&str),
         Kind::Bytes => quote!(&[u8]),
+        Kind::OptStr => quote!(::core::option::Option<&str>),
+        Kind::OptBytes => quote!(::core::option::Option<&[u8]>),
+        Kind::CStr => quote!(&::core::ffi::CStr),
     }
 }
 
@@ -654,6 +657,19 @@ fn to_value(kind: Kind, v: &TokenStream) -> TokenStream {
         Kind::Pointer => quote!(#value::Ptr(#v as usize)),
         Kind::Str => quote!(#value::Str(#v)),
         Kind::Bytes => quote!(#value::Bytes(#v)),
+        Kind::OptStr => quote!(match #v {
+            ::core::option::Option::Some(v) => #value::Str(v),
+            ::core::option::Option::None => #value::Null,
+        }),
+        Kind::OptBytes => quote!(match #v {
+            ::core::option::Option::Some(v) => #value::Bytes(v),
+            ::core::option::Option::None => #value::Null,
+        }),
+        // Text when it is UTF-8, else its bytes.
+        Kind::CStr => quote!(match #v.to_str() {
+            ::core::result::Result::Ok(s) => #value::Str(s),
+            ::core::result::Result::Err(_) => #value::Bytes(#v.to_bytes()),
+        }),
     }
 }
 

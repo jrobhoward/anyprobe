@@ -66,7 +66,11 @@ The semaphore is the enabled check, and the only way a probe knows a tracer
 is attached. The kernel raises it by file offset, in the first writable
 mapping of that file page. rust-lld writes the RELRO and data segments back to
 back, so each object emits one retained, page-aligned byte in `.probes` to keep
-the semaphores off the RELRO page. Sites that pass pointers are `readonly`,
+the semaphores off the RELRO page. The notes are retained, so `--gc-sections`
+keeps every function with a probe site rather than collecting it and leaving
+a note that names an address outside the code. `SHF_LINK_ORDER` would drop the
+note with the function instead, but needs a named label, which a site cannot
+have. Sites that pass pointers are `readonly`,
 never `nomem`, since the tracer reads memory through them.
 
 ### macOS
@@ -170,7 +174,7 @@ in this group.
 `serde` and `debug` values are written into a thread-local buffer and passed as
 a pointer and a length, with a NUL after the bytes. Values are cut at 4096
 bytes on a character boundary, and a cut value ends with `...` in place of
-its last bytes. The marker uses none of the six argument slots and needs no
+its last bytes. The marker uses none of the five argument slots and needs no
 change in a tracer; a flag operand would have taken a slot from every
 encoded probe. Once a write does not fit, the encoder refuses every later
 write, so a short one cannot land after the gap. The limit is a constant:

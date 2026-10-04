@@ -89,18 +89,35 @@ for a string field is a little under 65,400 bytes, the rest of the 64 KB
 going to the event's headers and other fields. A per-backend cap on native
 values would keep such events, at the cost of silently shortening them.
 
-### Six values per probe
+### Five values per probe
 
-SDT and DTrace pass six values in registers. `probes!` takes the native types
-only and rejects a probe that needs more; `#[probe]` collapses arguments that
-would pass six into one JSON object. Raising the limit needs a different
-argument passing scheme per backend.
+SDT and DTrace pass probe values in registers, six of them on macOS x86-64,
+but DTrace on Apple Silicon reports the sixth (`arg5`) of a USDT probe as 0
+although the site passes it in `x5`; the `pid` provider's `arg5` is not
+affected, and `uregs[R_X5]` reads the value. The `usdt` crate reports the
+same thing as issue #62. So every target stops at five: `probes!` takes the
+native types only and rejects a probe that needs more, and `#[probe]`
+collapses arguments that would pass more into one JSON object. If macOS
+fixes `arg5`, the limit can go back to six without breaking any probe;
+`spike/scripts/check-gaps-macos.sh` checks whether it still reads 0. Going
+past six needs a different argument passing scheme per backend.
 
 ### Native `&str` has no terminator
 
 A native `&str` is a pointer and a length with no NUL after it. bpftrace and
 dtrace read it with the length. perf and gdb read a NUL-terminated string and
-read past the end.
+read past the end. A `&CStr` argument is one pointer to NUL-terminated bytes,
+which those tools read as written.
+
+### `None` and an empty value look alike
+
+An `Option<&str>` or `Option<&[u8]>` that is `None` is passed as a null
+pointer and length 0. On Linux, macOS and FreeBSD a tracer can tell it from
+`Some("")` by the pointer; on Windows ETW has no absent field, so `None` is
+recorded as an empty string or no bytes, the same as `Some("")`. The scripts
+`cargo anyprobe` writes print `None` as `(none)` under dtrace, which errors on
+`copyinstr` of a null pointer, and as an empty string under bpftrace, which
+reads nothing for length 0.
 
 ### Provider names ending in a digit
 
@@ -110,6 +127,21 @@ a crate named `http2` has the provider `http2_`. Its probe names then differ
 from the crate name by that `_`; setting `provider` picks another name. A
 crate name of 58 bytes that ends in a digit is one byte too long once the
 `_` is added and has to set `provider`.
+
+### Names DTrace reserves
+
+On macOS ld64 writes each provider and its probes into a D declaration and
+compiles it, so a provider or probe name that D reserves fails to link with
+"Could not compile reconstructed dtrace script" and "error creating dtrace
+DOF section". The macros reject D's reserved words (`int`, `string`,
+`probe`, `this`, ...) and the integer types D defines (`int8_t` to
+`uint64_t`, `intptr_t`, `uintptr_t`) on every target, so a name that builds
+on one platform builds on all of them. The names of types in the kernel's
+type data fail the same way and are not rejected, since that set changes
+between macOS releases: on macOS 27 these include `size_t`, `pid_t`,
+`off_t` and `kern_return_t`. A probe named after one builds on every other
+platform and fails to link on macOS. `#[probe]` names end in `__entry`,
+`__return` or `__unwind` and never collide.
 
 ## `#[probe]`
 

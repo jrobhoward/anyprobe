@@ -7,8 +7,8 @@
 anyprobe::probes! {
     provider = "anyprobe_test";
 
-    /// A probe with one of each argument kind.
-    pub fn everything(a: u8, b: i64, c: bool, d: *const u32, text: &str);
+    /// A probe with several argument kinds, at the five-value limit.
+    pub fn everything(a: u8, b: i64, d: *const u32, text: &str);
     fn empty();
     fn bytes(data: &[u8]);
 }
@@ -67,7 +67,7 @@ fn enabled____no_tracer____is_false() {
 #[test]
 fn fire____no_tracer____does_nothing() {
     let value = 7u32;
-    everything::fire(1, -2, true, &value, "text");
+    everything::fire(1, -2, &value, "text");
     empty::fire();
     bytes::fire(&[1, 2, 3]);
     nested::inner::fire(3);
@@ -113,4 +113,57 @@ fn backend____this_target____is_named() {
         "noop"
     };
     assert_eq!(anyprobe::BACKEND, expected);
+}
+
+#[test]
+fn next_id____called_twice____ids_differ_and_are_not_0() {
+    let a = anyprobe::next_id();
+    let b = anyprobe::next_id();
+    assert_ne!(a, 0);
+    assert_ne!(b, 0);
+    assert_ne!(a, b);
+}
+
+#[test]
+fn next_id____from_several_threads____never_repeats() {
+    let threads: Vec<_> = (0..4)
+        .map(|_| std::thread::spawn(|| (0..1000).map(|_| anyprobe::next_id()).collect::<Vec<_>>()))
+        .collect();
+    let mut ids: Vec<u64> = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect();
+    let n = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), n);
+    assert!(!ids.contains(&0));
+}
+
+#[test]
+fn next_id____and_async_invocation_ids____share_one_counter() {
+    let a = anyprobe::next_id();
+    let b = anyprobe::__private::next_invocation();
+    assert!(b > a);
+}
+
+#[test]
+fn fire_macro____no_tracer____does_not_evaluate_arguments() {
+    let mut evaluated = 0;
+    let mut count = |v: u32| {
+        evaluated += 1;
+        v
+    };
+    anyprobe::fire!(nested::inner(count(1)));
+    anyprobe::fire!(crate::nested::inner(count(2)));
+    anyprobe::fire!(self::everything(1, -2, &count(3), &format!("{}", count(4))));
+    anyprobe::fire!(empty());
+    anyprobe::fire!(bytes(&[1, 2, 3],));
+    assert_eq!(evaluated, 0);
+}
+
+#[test]
+fn fire_macro____as_a_statement_and_an_expression____is_unit() {
+    let unit: () = anyprobe::fire!(empty());
+    assert_eq!(unit, ());
 }

@@ -26,13 +26,15 @@
 //! ```
 //!
 //! This defines `myapp:handle__entry(id, path, opts)` and
-//! `myapp:handle__return(ret)`. Integers, `bool`, `char`, raw pointers, `&str`
-//! and `&[u8]` are passed as they are; other arguments are listed in
+//! `myapp:handle__return(ret)`. Integers, `bool`, `char`, raw pointers, `&str`,
+//! `&[u8]`, their `Option`s and `&CStr` are passed as they are; other arguments are listed in
 //! `debug(..)`, `serde(..)` (JSON) or `skip(..)`. The attribute's
 //! documentation lists every option.
 //!
 //! [`probes!`] defines probes to fire from anywhere in a function. Each one
-//! becomes a module with `enabled()` and `fire(...)`:
+//! becomes a module with `enabled()` and `fire(...)`, and [`fire!`] calls
+//! `fire` only when `enabled()` is true, so the arguments are computed only
+//! while a tracer is attached:
 //!
 //! ```
 //! anyprobe::probes! {
@@ -43,9 +45,7 @@
 //! }
 //!
 //! fn handle(id: u64, path: &str) {
-//!     if request__start::enabled() {
-//!         request__start::fire(id, path);
-//!     }
+//!     anyprobe::fire!(request__start(id, path));
 //!     // ...
 //! }
 //! # handle(1, "/");
@@ -170,6 +170,92 @@ pub fn registration() -> Result<(), RegistrationError> {
     backend::registration()
 }
 
+/// A new id for correlating probes: unique within the process, across
+/// threads, and never 0.
+///
+/// Pass the same id to several probes, such as the start and end of a
+/// request, so a tracer can pair them when calls interleave. Taking an id
+/// only when the first probe is enabled keeps the disabled path to the
+/// enabled check; the later probes then pass 0, which a tracer reads as "the
+/// first probe was off when this started". `#[probe]` passes ids from the
+/// same counter to the probes of an `async fn`.
+///
+/// ```
+/// anyprobe::probes! {
+///     provider = "myapp";
+///
+///     /// A request started: its id and path.
+///     pub fn request__start(id: u64, path: &str);
+///     /// A request finished: its id and status.
+///     pub fn request__done(id: u64, status: u32);
+/// }
+///
+/// fn handle(path: &str) -> u32 {
+///     let id = if request__start::enabled() {
+///         let id = anyprobe::next_id();
+///         request__start::fire(id, path);
+///         id
+///     } else {
+///         0
+///     };
+///     let status = 200;
+///     if request__done::enabled() {
+///         request__done::fire(id, status);
+///     }
+///     status
+/// }
+/// # handle("/");
+/// ```
+#[cold]
+#[inline(never)]
+#[must_use]
+pub fn next_id() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Fires a [`probes!`] probe if it is enabled, evaluating the arguments only
+/// then.
+///
+/// `fire!(request__start(id, path))` expands to
+///
+/// ```text
+/// if request__start::enabled() {
+///     request__start::fire(id, path)
+/// }
+/// ```
+///
+/// so an argument that costs time to compute costs nothing while no tracer
+/// is attached, and the disabled path is the enabled check alone. The probe
+/// is named by its module path, as in `fire!(net::request__start(..))`.
+/// Calling `enabled()` directly remains useful when one check guards several
+/// probes or other work.
+///
+/// ```
+/// anyprobe::probes! {
+///     provider = "myapp";
+///
+///     /// A request started: its id and path.
+///     pub fn request__start(id: u64, path: &str);
+/// }
+///
+/// fn handle(id: u64, segments: &[&str]) {
+///     // `join` runs only while a tracer is attached.
+///     anyprobe::fire!(request__start(id, &segments.join("/")));
+///     // ...
+/// }
+/// # handle(1, &["a", "b"]);
+/// ```
+#[macro_export]
+macro_rules! fire {
+    ($($probe:ident)::+ ( $($arg:expr),* $(,)? )) => {
+        if $($probe)::+::enabled() {
+            $($probe)::+::fire($($arg),*)
+        }
+    };
+}
+
 // Compiles README.md's examples as doctests, so they cannot drift from the API.
 #[cfg(doctest)]
 #[doc = include_str!("../../../README.md")]
@@ -205,16 +291,10 @@ pub mod __private {
 
     /// A new invocation id for an `async fn` under `#[probe]`, passed as the
     /// first argument of its probes so a tracer can pair each entry with its
-    /// return when calls interleave. Never 0: an id of 0 on a return or
-    /// unwind probe means the entry probe was off when the call started.
-    #[cold]
-    #[inline(never)]
-    #[must_use]
-    pub fn next_invocation() -> u64 {
-        use core::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    }
+    /// return when calls interleave. An id of 0 on a return or unwind probe
+    /// means the entry probe was off when the call started. The same counter
+    /// as [`next_id`](crate::next_id), so the two never hand out one id twice.
+    pub use crate::next_id as next_invocation;
 
     /// Whether this thread is unwinding from a panic, for `#[probe(unwind)]`.
     /// Called from here so the caller's crate needs no `::std` path.

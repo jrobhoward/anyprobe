@@ -13,6 +13,10 @@
 # For each profile it builds both examples and checks that:
 #   - `attr_async` has one SDT note per probe, each on a `nop`, and exports
 #     `attr_async__exported` as a global function;
+#   - `anyprobe-check`'s `gc_sections` example, which never calls most of
+#     the library's probed functions, has every SDT note on a `nop`: a
+#     function `--gc-sections` collected must not leave a note naming an
+#     address outside the code;
 #   - in both examples, `.probes` starts a page that no other writable
 #     segment maps (the kernel raises semaphores by file offset, for
 #     `bpftrace -c` and perf, in the first writable mapping of the page);
@@ -25,7 +29,8 @@
 #     NUL-terminated string (what perf and gdb do); a `debug` return value
 #     reads as its `{:?}` output; arguments collapsed into one object read
 #     as that JSON object; `debug(self)` on a method reads as the receiver's
-#     `{:?}` output;
+#     `{:?}` output; five native values, the most a probe passes, read as
+#     written, the fifth included;
 #   - with `attr_async` run under `bpftrace -c` for 20 iterations (two
 #     interleaved `fetch` calls each): every `fetch` return pairs with its
 #     entry by invocation id (unique, not 0) and carries
@@ -111,6 +116,7 @@ for profile in "$@"; do
   profile_failed=0
   if ! cargo build -q -p anyprobe --example attr --example attr_async --example same_name \
     --profile "$profile" \
+    || ! cargo build -q -p anyprobe-check --example gc_sections --profile "$profile" \
     || ! cargo build -q -p cargo-anyprobe; then
     echo "  FAIL  build"
     failed=1
@@ -132,20 +138,22 @@ for profile in "$@"; do
   done
   sites=$(notes_on_nops "$async")
   expect "attr_async: every SDT note on a nop ($sites)" test "$sites" = ok
+  sites=$(notes_on_nops "$PWD/target/$profile/examples/gc_sections")
+  expect "gc_sections: every SDT note on a nop ($sites)" test "$sites" = ok
   expect "attr_async: symbol exported as attr_async__exported" \
     bash -c "readelf -sW '$async' | grep -qE ' FUNC +GLOBAL +DEFAULT +[0-9]+ attr_async__exported\$'"
 
   cli="$PWD/target/debug/cargo-anyprobe"
   gen="$work/$profile.gen"
   "$cli" list "$bin" >"$gen.attr.list" 2>&1
-  expect "cargo anyprobe list: attr has 8 probes, each with a site" \
-    bash -c "tail -1 '$gen.attr.list' | grep -qx '8 probes in 1 provider' && ! grep -q 'no site' '$gen.attr.list'"
+  expect "cargo anyprobe list: attr has 12 probes, each with a site" \
+    bash -c "tail -1 '$gen.attr.list' | grep -qx '12 probes in 1 provider' && ! grep -q 'no site' '$gen.attr.list'"
   "$cli" list "$async" >"$gen.async.list" 2>&1
   expect "cargo anyprobe list: attr_async has 10 probes, each with a site" \
     bash -c "tail -1 '$gen.async.list' | grep -qx '10 probes in 1 provider' && ! grep -q 'no site' '$gen.async.list'"
   "$cli" bpftrace "$bin" >"$gen.attr.bt" 2>"$gen.attr.err"
   expect "cargo anyprobe bpftrace: one clause per attr probe" \
-    test "$(grep -c '^usdt:' "$gen.attr.bt")" -eq 8
+    test "$(grep -c '^usdt:' "$gen.attr.bt")" -eq 12
   "$cli" bpftrace "$async" >"$gen.async.bt" 2>"$gen.async.err"
   expect "cargo anyprobe bpftrace: one clause per attr_async probe" \
     test "$(grep -c '^usdt:' "$gen.async.bt")" -eq 10
@@ -171,6 +179,12 @@ for profile in "$@"; do
     usdt:$bin:attr:query__return { printf(\"query-return %s\n\", str(arg0, arg1)); }
     usdt:$bin:attr:wide__entry { printf(\"wide-entry %s\n\", str(arg0, arg1)); }
     usdt:$bin:attr:counter_bump__entry { printf(\"bump-entry %s %d\n\", str(arg0, arg1), arg2); }
+    usdt:$bin:attr:five__entry {
+      printf(\"five-entry %d %d %d %d %d\n\", arg0, (int64)arg1, arg2, arg3, arg4);
+    }
+    usdt:$bin:attr:optional__entry {
+      printf(\"optional-entry %s|%d|%s\n\", str(arg0, arg1), arg3, str(arg4));
+    }
     interval:s:3 { exit(); }" >"$out" 2>&1
   sleep 1
   kill "$pid" 2>/dev/null
@@ -188,9 +202,13 @@ for profile in "$@"; do
     grep -qE '^wide-entry \{"id":[0-9]+,"a":"x","b":"y","c":"z","tags":"\[\\"t\\"\]"\}$' "$out"
   expect "debug(self) and a native argument" \
     grep -qE '^bump-entry Counter \{ n: [0-9]+ \} 1$' "$out"
+  expect "five native values, the fifth on its own" \
+    grep -qE '^five-entry [0-9]+ -12 13 1 16$' "$out"
+  expect "Option<&str> Some, Option<&[u8]> None, &CStr" grep -qE '^optional-entry opt\|0\|cee$' "$out"
+  expect "Option<&str> None, Option<&[u8]> Some, &CStr" grep -qE '^optional-entry \|1\|cee$' "$out"
   # Every printed line is one of the formats above.
   expect "nothing unexpected" \
-    test -z "$(grep -vE '^(lookup-entry|lookup-return|query-entry|query-entry-nul|query-return|wide-entry|bump-entry) |^Attaching |^$' "$out")"
+    test -z "$(grep -vE '^(lookup-entry|lookup-return|query-entry|query-entry-nul|query-return|wide-entry|bump-entry|five-entry|optional-entry) |^Attaching |^$' "$out")"
 
   # Run under bpftrace, so every call is seen and the counts are exact.
   $sudo timeout 120 bpftrace -c "$async $iterations 20" -e "
@@ -278,6 +296,13 @@ for profile in "$@"; do
   expect "generated: debug(self)" bash -c "
     [ \$(grep -cE '^attr:counter_bump__entry self=Counter \{ n: [0-9]+ \} by=1\$' '$gout') -eq $n ] &&
     [ \$(grep -cE '^attr:counter_bump__return\$' '$gout') -eq $n ]"
+  expect "generated: five native values" bash -c "
+    [ \$(grep -cE '^attr:five__entry id=[0-9]+ neg=-12 c=13 on=1 last=16\$' '$gout') -eq $n ] &&
+    [ \$(grep -cE '^attr:five__return\$' '$gout') -eq $n ]"
+  expect "generated: optional strings and bytes, C string" bash -c "
+    [ \$(grep -cE '^attr:optional__entry name=opt key= label=cee\$' '$gout') -eq $((n / 2)) ] &&
+    [ \$(grep -cE '^attr:optional__entry name= key=.+ label=cee\$' '$gout') -eq $((n / 2)) ] &&
+    [ \$(grep -cE '^attr:optional__return\$' '$gout') -eq $n ]"
   expect "generated: attr, nothing unexpected" test -z "$(grep -vE \
     '^attr:[a-z_]+__(entry|return)( |$)|^(pid|backend)=|^done |^Attaching |^$' "$gout")"
 

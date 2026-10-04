@@ -190,3 +190,11 @@ impl Debug for Reentrant {
 fn text____encoding_inside_encoding____uses_a_separate_buffer() {
     assert_eq!(one(Value::debug(&Reentrant)).0, "outer(42)");
 }
+
+#[test]
+fn object____null_value____is_json_null() {
+    assert_eq!(
+        object_of(["a", "b"], [Value::Null, Value::Str("x")]),
+        r#"{"a":null,"b":"x"}"#
+    );
+}

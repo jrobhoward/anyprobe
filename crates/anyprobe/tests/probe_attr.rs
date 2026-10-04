@@ -69,7 +69,7 @@ fn natives_by_trait(row: RowId, alias: Alias) -> Alias {
     u64::from(row.0) + alias
 }
 
-/// More than six operands: the arguments collapse into one JSON object.
+/// More than five operands: the arguments collapse into one JSON object.
 #[anyprobe::probe(debug(extra))]
 fn many(a: &str, b: &str, c: &str, d: u64, extra: Vec<u32>) -> usize {
     a.len() + b.len() + c.len() + d as usize + extra.len()
@@ -125,6 +125,18 @@ fn wildcard(_: u64, mut counter: u32) -> u32 {
 
 #[anyprobe::probe]
 fn no_arguments() {}
+
+/// `Option<&str>`, `Option<&[u8]>` and `&CStr` passed natively, and in a
+/// collapsed object with a `None`.
+#[anyprobe::probe]
+fn optional(name: Option<&str>, key: Option<&[u8]>, label: &std::ffi::CStr) -> usize {
+    name.map_or(0, str::len) + key.map_or(0, <[u8]>::len) + label.to_bytes().len()
+}
+
+#[anyprobe::probe]
+fn optional_many(a: &str, b: &str, c: Option<&str>, d: Option<&[u8]>) -> usize {
+    a.len() + b.len() + c.map_or(0, str::len) + d.map_or(0, <[u8]>::len)
+}
 
 #[derive(Debug, Default)]
 struct Counter {
@@ -244,4 +256,11 @@ fn probe____methods____borrow_and_move_self() {
     assert_eq!(c.name(), "n");
     assert_eq!(c.area(), 0);
     assert_eq!(c.into_value(), 13);
+}
+
+#[test]
+fn probe____optional_and_c_strings____return_the_bodys_value() {
+    assert_eq!(optional(Some("ab"), None, c"xyz"), 5);
+    assert_eq!(optional(None, Some(b"k"), c""), 1);
+    assert_eq!(optional_many("a", "b", None, Some(b"cd")), 4);
 }

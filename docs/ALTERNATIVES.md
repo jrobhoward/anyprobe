@@ -13,8 +13,9 @@ documentation as of October 2026; check each project for changes.
 | illumos | no | DTrace USDT, registered at startup | no | no | in-process |
 | Who reads the events | a tracer outside the process | a tracer outside the process | a tracer outside the process | an ETW session | a subscriber inside the process |
 | Probes on a function's entry and return | `#[probe]` | no | no | no | `#[instrument]` spans |
-| Arguments | integers, `bool`, `char`, pointers, `&str`, `&[u8]`; `serde` or `Debug` encoding | integers, pointers, strings; `Serialize` as JSON | integers, cast to `isize` | typed fields | typed fields and `Debug` |
+| Arguments | integers, `bool`, `char`, pointers, `&str`, `&[u8]`, their `Option`s, `&CStr`; `serde` or `Debug` encoding | integers, pointers to integers, strings; `Serialize` as JSON | integers, cast to `isize` | typed fields | typed fields and `Debug` |
 | Arguments skipped when off | yes | yes | with `probe_lazy!` | yes | yes |
+| Ids that pair related events | `next_id()`; `#[probe]` pairs `async fn` calls | `UniqueId` | no | activity ids | span ids |
 | Lists probes in a built binary | `cargo anyprobe list` | `usdt::probe_records` | no | no | no |
 
 ## `usdt`
@@ -23,7 +24,9 @@ documentation as of October 2026; check each project for changes.
 is the closest alternative. Probes are declared in a D provider file, read
 by a build script or the `dtrace_provider!` macro, or as function signatures
 in a module under `#[usdt::provider]`. Each probe is fired with a macro that
-takes a closure, which runs only when the probe is enabled.
+takes a closure, which runs only when the probe is enabled. anyprobe's
+`fire!` evaluates its arguments only when the probe is enabled too, and its
+`enabled()` lets one check guard several probes.
 
 - It covers illumos and FreeBSD, where it builds DOF itself and registers it
   when the program calls `usdt::register_probes()`. anyprobe compiles to
@@ -37,10 +40,23 @@ takes a closure, which runs only when the probe is enabled.
 - It has no attribute that probes a function's entry and return; each fire
   point is written by hand, as with anyprobe's `probes!`.
 - Arguments that implement `Serialize` are passed as JSON, as anyprobe's
-  `serde(..)` does. There is no `Debug` encoding.
-- `usdt` takes at most six arguments per probe. anyprobe takes six values,
-  where a `&str` or an encoded argument counts as two, and collapses a
-  longer argument list into one JSON object.
+  `serde(..)` does, wrapped in an object with an `ok` key (`{"ok": ...}`)
+  since serializing can fail, so a D script reads `json(s, "ok.field")`.
+  There is no `Debug` encoding.
+- A `&str` or `String` argument is copied into a new NUL-terminated buffer
+  each time the probe fires with a tracer attached. anyprobe passes a
+  pointer and a length, with no copy.
+- A pointer argument must point to an integer type. anyprobe takes a
+  pointer to any type.
+- Its `UniqueId` argument type correlates the probes of one operation.
+  anyprobe's `next_id()` returns an id to pass as a `u64`.
+- On Linux, a probe in a function the linker removes under `--gc-sections`
+  leaves an SDT note behind that names an invalid address (issue #498,
+  open). anyprobe retains the notes, which keeps the function.
+- `usdt` takes at most six arguments per probe; its issue #62 reports the
+  sixth reading as 0 on Apple Silicon. anyprobe takes five values, where a
+  `&str` or an encoded argument counts as two, and collapses a longer
+  argument list into one JSON object.
 
 A program that needs illumos, or FreeBSD on another architecture than
 x86-64, or already has D provider files, fits `usdt`. One that needs Windows, or entry and return probes on many

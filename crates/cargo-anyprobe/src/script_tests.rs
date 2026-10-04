@@ -145,3 +145,31 @@ fn wprp____providers____are_enabled_by_guid_in_both_modes() {
 fn xml_text____double_dash____cannot_end_the_comment() {
     assert_eq!(xml_text("/a--b"), "/a- -b");
 }
+
+const OPTIONAL: [(&str, &str); 3] = [("name", "opt_str"), ("key", "opt_bytes"), ("label", "cstr")];
+
+#[test]
+fn bpftrace____optional_and_c_strings____are_read_by_length_or_to_their_nul() {
+    let bytes = section(&[entry("look__entry", "look", &OPTIONAL)]);
+    let out = bpftrace(bin(), &groups(parse(&bytes), None, &Filter::default()));
+    assert!(
+        out.contains(
+            "printf(\"app:look__entry name=%s key=%r label=%s\\n\", \
+             str(arg0, arg1), buf(arg2, arg3), str(arg4));"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn dtrace____optional_str____is_not_copied_from_a_null_pointer() {
+    let bytes = section(&[entry("look__entry", "look", &OPTIONAL)]);
+    let out = dtrace(bin(), &groups(parse(&bytes), None, &Filter::default()));
+    assert!(
+        out.contains(
+            "printf(\"app:look__entry name=%s key=<%u bytes> label=%s\\n\", \
+             arg0 ? copyinstr(arg0, arg1) : \"(none)\", arg3, copyinstr(arg4));"
+        ),
+        "{out}"
+    );
+}

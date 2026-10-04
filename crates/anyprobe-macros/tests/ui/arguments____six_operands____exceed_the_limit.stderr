@@ -1,0 +1,5 @@
+error: this probe passes 6 values (`&str` and `&[u8]` count as two); the limit is 5, because DTrace on arm64 macOS reads a sixth value as 0
+ --> tests/ui/arguments____six_operands____exceed_the_limit.rs:3:11
+  |
+3 |     fn hit(a: &str, b: &str, c: &str);
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^

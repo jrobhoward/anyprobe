@@ -2,7 +2,7 @@
 //! function with no probes. `probed` mirrors the spike's benchmark, so the
 //! generated code can be compared with the hand-written probes; `attribute`
 //! is the same function under `#[probe]` with the same arguments and a native
-//! return value.
+//! return value; `fire_macro` is `probed` written with `anyprobe::fire!`.
 
 #![allow(missing_docs)]
 
@@ -44,6 +44,14 @@ fn probed(id: u64, label: &str) -> u64 {
     result
 }
 
+#[inline(never)]
+fn fire_macro(id: u64, label: &str) -> u64 {
+    anyprobe::fire!(work__entry(id, label));
+    let result = compute(id, label);
+    anyprobe::fire!(work__return(id, result));
+    result
+}
+
 #[anyprobe::probe(provider = "bench", ret = native)]
 #[inline(never)]
 fn attribute(id: u64, label: &str) -> u64 {
@@ -62,6 +70,9 @@ fn disabled_cost(c: &mut Criterion) {
     });
     group.bench_function("probed", |b| {
         b.iter(|| probed(black_box(42), black_box("label")));
+    });
+    group.bench_function("fire_macro", |b| {
+        b.iter(|| fire_macro(black_box(42), black_box("label")));
     });
     group.bench_function("attribute", |b| {
         b.iter(|| attribute(black_box(42), black_box("label")));

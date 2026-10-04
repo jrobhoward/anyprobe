@@ -230,6 +230,12 @@ object, the semaphores can share a page with the RELRO segment and every
 probe stays off. `bpftrace -p` writes the semaphore itself and hides the
 bug. `attach-linux-attr.sh` checks the layout without root.
 
+**`.note.stapsdt` is retained (`"R"`).** The note is not allocated, so
+`--gc-sections` keeps it even when it collects the function holding the site,
+and rust-lld then writes an address in the ELF header into the note. The
+retained flag keeps the function instead. `attach-linux-attr.sh` checks it
+without root on `anyprobe-check`'s `gc_sections` example.
+
 **Probe sites that pass pointers are `readonly`, never `nomem`.** The tracer
 reads memory through the arguments at the site. Under `nomem` the compiler may
 sink or drop a store to a buffer whose only reader is the probe, such as an
@@ -309,6 +315,9 @@ the caller's lints, not this workspace's. It uses absolute paths
 (`::anyprobe::__private::...`), `__anyprobe_`-prefixed identifiers, and the
 `#[allow]`s it needs, and the test crates that exercise it run under
 `cargo clippy -- -Dwarnings` like everything else.
+`crates/anyprobe/tests/probes_lints.rs` turns on `pedantic`, `nursery` and
+`cast_lossless` around every kind of probe; a new argument kind or form of
+generated code is added there.
 
 ## Licensing is a design constraint
 

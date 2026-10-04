@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks two runtime claims in docs/GAPS.md on macOS:
+# Checks three runtime claims in docs/GAPS.md on macOS:
 #
 #   - A killed tracer leaves nothing behind ("What a tracer writes into the
 #     process"). dtrace enables the `work` example's work-entry probe by its
@@ -19,6 +19,12 @@
 #     `libplug.dylib`, which shows dyld registered the library's DOF, and
 #     `dtrace -p` reads `plugonly$target:::tick`. Then `shared$target:::tick`,
 #     defined in both files, fires in each, told apart by `probemod`.
+#   - DTrace on arm64 reports a USDT probe's sixth argument as 0 ("Five
+#     values per probe"). anyprobe passes at most five, so a scratch C
+#     program defines a six-argument probe with `dtrace -h` and passes 16
+#     last: on arm64 `arg5` reads 0 and `uregs[R_X5]` 16; on x86-64 `arg5`
+#     reads 16. A pass on x86-64 means the limit could be six there; a
+#     failure on arm64 may mean a macOS update fixed `arg5`.
 #
 # Site addresses come from examples/inspect_dof.rs, which lists every probe
 # and is-enabled site of the binary on disk; ASLR moves them by the slide,
@@ -26,7 +32,7 @@
 # program for a moment and needs root for that.
 #
 # Usage: spike/scripts/check-gaps-macos.sh
-# Needs cargo, lldb (Xcode command line tools), and sudo for dtrace and
+# Needs cargo, cc and lldb (Xcode command line tools), and sudo for dtrace and
 # lldb. Works with SIP on. Run as yourself, not under sudo: cargo run as root
 # leaves root-owned files in target/. Prints ok/FAIL per check and exits
 # non-zero if any check failed.
@@ -305,9 +311,41 @@ done
 kill "$hpid" 2>/dev/null
 wait "$hpid" 2>/dev/null
 
+echo "== sixth USDT argument"
+# The sixth value, 16, is passed in `x5` on arm64 and `r9` on x86-64.
+mkdir -p "$work/six"
+cat >"$work/six/six.d" <<'EOF'
+provider sixc {
+	probe six(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+};
+EOF
+cat >"$work/six/six.c" <<'EOF'
+#include "six.h"
+int main(void) {
+	for (int i = 0; i < 4; i++)
+		SIXC_SIX(i, 11, 12, 13, 14, 16);
+	return 0;
+}
+EOF
+if ! dtrace -h -s "$work/six/six.d" -o "$work/six/six.h" ||
+  ! cc -O1 -o "$work/six/six" "$work/six/six.c"; then
+  echo "  FAIL  build the six-argument C program"
+  exit 1
+fi
+if [ "$(uname -m)" = arm64 ]; then reg='uregs[R_X5]'; else reg='uregs[R_R9]'; fi
+sudo dtrace -q -c "$work/six/six" -n "
+  sixc\$target:::six { printf(\"six %d %d\\n\", arg5, $reg); }" >"$work/six.out" 2>&1
+if [ "$(uname -m)" = arm64 ]; then
+  expect "arm64: arg5 reads 0 while x5 holds the value (4 firings)" \
+    test "$(grep -cx 'six 0 16' "$work/six.out")" -eq 4
+else
+  expect "x86-64: arg5 reads the value (4 firings)" \
+    test "$(grep -cx 'six 16 16' "$work/six.out")" -eq 4
+fi
+
 if [ "$failed" -ne 0 ]; then
   for f in work.log dtrace.out dtrace2.out dtrace3.out dof before during after after2 \
-    after3 host.log plug.dof dl-list dl-list-shared dl1.out dl2.out; do
+    after3 host.log plug.dof dl-list dl-list-shared dl1.out dl2.out six.out; do
     [ -f "$work/$f" ] && { echo "  --- $f (last 30 lines)"; tail -30 "$work/$f"; }
   done
   echo FAIL

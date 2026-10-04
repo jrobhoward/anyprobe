@@ -29,6 +29,21 @@ fn get(id: u32, opts: &Opts, data: &[u8]) -> Result<u8, String> {
 #[derive(Debug)]
 struct Opts;
 
+mod optional {
+    use std::ffi::CStr;
+
+    anyprobe::probes! {
+        provider = "registry";
+
+        pub fn lookup(name: Option<&str>, key: Option<&[u8]>, label: &CStr);
+    }
+}
+
+#[anyprobe::probe(provider = "registry")]
+fn tagged(name: Option<&str>, label: &core::ffi::CStr) -> usize {
+    name.map_or(0, str::len) + label.to_bytes().len()
+}
+
 #[anyprobe::probe(provider = "registry", unwind)]
 async fn fetch(id: u64) -> u64 {
     id
@@ -261,4 +276,28 @@ fn list____autoref_argument____is_auto() {
         args(&find("auto__entry")),
         named(&[("opts", ArgType::Auto)])
     );
+}
+
+#[test]
+fn list____optional_and_c_strings____have_their_own_types() {
+    if !listed() {
+        return;
+    }
+    assert_eq!(
+        args(&find("lookup")),
+        named(&[
+            ("name", ArgType::OptStr),
+            ("key", ArgType::OptBytes),
+            ("label", ArgType::CStr),
+        ])
+    );
+    assert_eq!(
+        args(&find("tagged__entry")),
+        named(&[("name", ArgType::OptStr), ("label", ArgType::CStr)])
+    );
+    assert_eq!(ArgType::OptStr.slots(), 2);
+    assert_eq!(ArgType::OptBytes.slots(), 2);
+    assert_eq!(ArgType::CStr.slots(), 1);
+    assert_eq!(tagged(Some("ab"), c"xyz"), 5);
+    optional::lookup::fire(None, Some(b"k"), c"l");
 }

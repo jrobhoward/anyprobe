@@ -18,12 +18,13 @@ use crate::names;
 
 syn::custom_keyword!(provider);
 
-/// Most operands one probe may pass. macOS on x86-64 passes probe arguments
-/// in the six System V integer argument registers.
-pub(crate) const MAX_OPERANDS: usize = 6;
+/// Most operands one probe may pass. macOS passes probe arguments in the
+/// integer argument registers, six on x86-64, but DTrace on arm64 macOS
+/// reports the sixth (`arg5`) as 0, so every target stops at five.
+pub(crate) const MAX_OPERANDS: usize = 5;
 
-const AARCH64_REGS: [&str; MAX_OPERANDS] = ["x0", "x1", "x2", "x3", "x4", "x5"];
-const X86_64_REGS: [&str; MAX_OPERANDS] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+const AARCH64_REGS: [&str; MAX_OPERANDS] = ["x0", "x1", "x2", "x3", "x4"];
+const X86_64_REGS: [&str; MAX_OPERANDS] = ["rdi", "rsi", "rdx", "rcx", "r8"];
 
 /// DTrace's default stability attributes, as `dtrace -h` writes them for a
 /// provider with no `#pragma D attributes`.
@@ -246,8 +247,8 @@ fn validate(item: ForeignItemFn) -> syn::Result<Probe> {
             sig.paren_token.span.join(),
             format!(
                 "this probe passes {operands} values (`&str` and `&[u8]` count as two); \
-                 the limit is {MAX_OPERANDS}, because macOS x86-64 passes probe arguments \
-                 in six registers"
+                 the limit is {MAX_OPERANDS}, because DTrace on arm64 macOS reads a sixth \
+                 value as 0"
             ),
         ));
     }

@@ -116,6 +116,16 @@ macro_rules! __anyprobe_define_probe {
 /// right if the two share a segment's address-to-offset delta; with rust-lld
 /// and `"aG"`, perf put every probe 0x1000 bytes from its `nop`.
 ///
+/// `.note.stapsdt` is retained (`"R"`, where `sys/sdt.h` uses `""`). The note
+/// is not allocated, so `--gc-sections` never collects it, but it can collect
+/// the function the note's site is in: a probed `pub fn` in a library that
+/// the program never calls. rust-lld then resolves the site's address against
+/// the discarded section, and the note names an address in the ELF header.
+/// A retained section is a garbage-collection root, so the function its sites
+/// refer to stays in the binary, as GNU ld already keeps it. `SHF_LINK_ORDER`
+/// (`"o"`) would drop the note with the function instead, but it needs a
+/// named symbol in the function's section, and sites use numeric labels only.
+///
 /// Each site also carries a `NONE` relocation against
 /// `__start_anyprobe_probes`, which emits no code. rustc 1.88, the MSRV, does
 /// not mark a `#[used]` static as retained (1.99 does), and GNU ld under
@@ -142,7 +152,7 @@ macro_rules! __anyprobe_sdt_site {
                 "990: nop",
                 ".weak __start_anyprobe_probes",
                 ".reloc 990b, BFD_RELOC_NONE, __start_anyprobe_probes",
-                ".pushsection .note.stapsdt, \"\", \"note\"",
+                ".pushsection .note.stapsdt, \"R\", \"note\"",
                 ".balign 4",
                 ".4byte 992f-991f, 994f-993f, 3",
                 "991: .asciz \"stapsdt\"",
@@ -197,7 +207,7 @@ macro_rules! __anyprobe_sdt_site {
                 "990: nop",
                 ".weak __start_anyprobe_probes",
                 ".reloc 990b, BFD_RELOC_NONE, __start_anyprobe_probes",
-                ".pushsection .note.stapsdt, \"\", \"note\"",
+                ".pushsection .note.stapsdt, \"R\", \"note\"",
                 ".balign 4",
                 ".4byte 992f-991f, 994f-993f, 3",
                 "991: .asciz \"stapsdt\"",

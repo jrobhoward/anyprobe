@@ -1,0 +1,5 @@
+error: provider name `probe` is reserved in DTrace's D language, and macOS fails to link it
+ --> tests/ui/provider____d_reserved_word____is_rejected.rs:2:16
+  |
+2 |     provider = "probe";
+  |                ^^^^^^^
