@@ -143,6 +143,16 @@ fn list_json____this_binary____gives_one_object_per_definition() {
 #[test]
 fn bpftrace____this_binary____has_a_clause_per_probe() {
     let run = cli(&["bpftrace", "--provider", "clitest"]);
+    // A Windows path holds `\` and `:`, which bpftrace cannot take in a probe.
+    if cfg!(windows) {
+        assert!(!run.status.success(), "{}", run.stdout);
+        assert!(
+            run.stderr.contains("bpftrace cannot attach"),
+            "{}",
+            run.stderr
+        );
+        return;
+    }
     assert!(run.status.success(), "{}", run.stderr);
     if !listed() {
         return;
