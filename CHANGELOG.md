@@ -4,7 +4,7 @@ Notable changes to `anyprobe`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.9.0 - unreleased
 
 ### Added
 
@@ -82,6 +82,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `probes!`: a module with many probes no longer takes compile memory that
+  grows with the square of their number. Each probe's module imported its
+  parent's names, which `cargo check` of 3,000 probes in one module took
+  3.1 GB for; it now imports them only for a raw pointer to a type named
+  relative to the caller's module, and took 0.55 GB.
 - `cargo anyprobe dtrace`: the D script set `strsize` to 4096, one byte short
   of the longest encoded value and its NUL, so dtrace dropped the last byte
   of a value cut at the limit. It now sets 4097.

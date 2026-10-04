@@ -174,9 +174,9 @@ metadata to check against.
   names unless one sets `name = "..."`. If their arguments differ, each site
   still passes its own. On macOS a dtrace script tells them apart by the
   function it reports (`probefunc`); on FreeBSD both report `new`, and only
-  the probe id differs. Nobody has tried this with bpftrace yet. `cargo
-  anyprobe list` warns about such probes, and its scripts print no arguments
-  for them.
+  the probe id differs. bpftrace turns on only one of them. `cargo anyprobe
+  list` warns about such probes, and its scripts print no arguments for
+  them.
 - `anyprobe::list()` reads the executable or library it is linked into, not
   shared libraries loaded alongside it. Each probe's description takes
   about 150 bytes, most of it the source file path and module path.

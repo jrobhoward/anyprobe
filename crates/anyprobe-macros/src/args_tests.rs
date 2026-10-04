@@ -104,3 +104,29 @@ fn hex____c_types____match_dtrace_h_output() {
     assert_eq!(hex("int64_t"), "696e7436345f74");
     assert_eq!(hex("uintptr_t"), "75696e747074725f74");
 }
+
+#[test]
+fn is_self_contained____primitives_and_rooted_paths____need_no_imports() {
+    assert!(is_self_contained(&parse_quote!(u64)));
+    assert!(is_self_contained(&parse_quote!(&str)));
+    assert!(is_self_contained(&parse_quote!(&[u8])));
+    assert!(is_self_contained(&parse_quote!(*const ())));
+    assert!(is_self_contained(&parse_quote!(*mut [u32; 4])));
+    assert!(is_self_contained(&parse_quote!(*const crate::Request)));
+    assert!(is_self_contained(&parse_quote!(*const ::core::ffi::c_void)));
+    assert!(is_self_contained(&parse_quote!(
+        *const crate::Pair<u8, &'static str>
+    )));
+}
+
+#[test]
+fn is_self_contained____names_from_the_callers_module____need_imports() {
+    assert!(!is_self_contained(&parse_quote!(*const Request)));
+    assert!(!is_self_contained(&parse_quote!(*const c_void)));
+    assert!(!is_self_contained(&parse_quote!(*const std::ffi::c_void)));
+    assert!(!is_self_contained(&parse_quote!(
+        *const crate::Pair<Request>
+    )));
+    assert!(!is_self_contained(&parse_quote!(*const [u8; LEN])));
+    assert!(!is_self_contained(&parse_quote!(*const dyn Fn())));
+}

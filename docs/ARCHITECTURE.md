@@ -3,7 +3,7 @@
 How the workspace is laid out and why each backend works the way it does.
 Limitations are in [GAPS.md](GAPS.md) and costs in
 [PERFORMANCE.md](PERFORMANCE.md), which also shows what each tracer does when
-it attaches. The work still planned before 1.0 is in [PLAN.md](PLAN.md).
+it attaches.
 
 ## Crates
 

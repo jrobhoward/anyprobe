@@ -340,12 +340,26 @@ pub(crate) fn define_named_probe(provider: &str, name_str: &str, probe: &Probe) 
 
     let registry = registry_record(provider, name_str, probe);
 
+    // A parameter type that names something in the caller's module (a
+    // pointer to a local struct) needs the module's names imported. The
+    // import is left out otherwise: rustc's work for a glob import grows with
+    // the number of names in the parent, and every probe module is one, so N
+    // probes in one module would cost N squared.
+    let imports = args
+        .iter()
+        .any(|a| syn::parse2(a.ty.clone()).map_or(true, |t| !args::is_self_contained(&t)))
+        .then(|| {
+            quote!(
+                #[allow(unused_imports)]
+                use super::*;
+            )
+        });
+
     quote! {
         #(#attrs)*
         #[allow(non_snake_case)]
         #vis mod #name {
-            #[allow(unused_imports)]
-            use super::*;
+            #imports
 
             ::anyprobe::__private::define_probe! {
                 provider: #provider,

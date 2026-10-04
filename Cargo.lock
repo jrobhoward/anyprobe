@@ -25,7 +25,7 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "anyprobe"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyprobe-macros",
  "criterion",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "anyprobe-macros"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyprobe",
  "proc-macro2",
@@ -75,7 +75,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "cargo-anyprobe"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyprobe",
  "dof",

@@ -25,9 +25,9 @@ that value is untested on a kernel with 64 KiB pages.
 ### FreeBSD
 
 FreeBSD has a backend on x86-64 only. FreeBSD on AArch64 and other
-architectures compiles to the no-op backend: nobody has checked whether
-`fasttrap` supports USDT there. Cost: an AArch64 FreeBSD machine, and AArch64
-versions of the two site instructions.
+architectures compiles to the no-op backend, and no support is planned:
+nobody has checked whether `fasttrap` supports USDT there. Cost: an AArch64
+FreeBSD machine, and AArch64 versions of the two site instructions.
 
 The FreeBSD measurements come from FreeBSD 15.0 in a KVM virtual machine.
 Nobody has run the backend on FreeBSD hardware or on another release. The
@@ -48,7 +48,9 @@ that layout by default; the binary has to be linked with GNU ld or with
 `-C link-arg=-Wl,-z,separate-loadable-segments`. The separate-segments layout
 makes the binary larger. With the default layout SystemTap can place a
 uprobe at the wrong address, where the breakpoint can crash the traced
-process. bpftrace and perf need neither and are the tested tracers.
+process. bpftrace and perf need neither and are the tested tracers. CI does not run
+SystemTap, which needs building from source on current kernels;
+`spike/scripts/attach-linux-stap.sh` checks it by hand.
 
 ### perf and older kernels
 
@@ -119,6 +121,13 @@ future without being `async fn` (`#[async_trait]`). `symbol` also rejects
 generic fns, trait-impl methods and `async fn`, which have no single stable
 symbol. Supporting any of them changes how the return value is captured.
 
+### `async fn` probes
+
+An `async fn`'s entry probe fires when its body first runs and its return
+probe when the body completes. Nothing fires at each poll or while the future
+is pending, so time spent waiting cannot be told apart from time spent
+running. Probes per poll would need a wrapper future around the body.
+
 ### Closures and functions without a body
 
 `#[probe]` applies to a function item with a body: a free function, a method,
@@ -154,8 +163,21 @@ correctly at each site, but a script has to tell the sites apart by function.
 `cargo anyprobe list` warns about the case and the generated scripts print no
 arguments for it. On macOS DTrace's `probefunc` is the mangled symbol, which
 names the impl. On FreeBSD it is the function's name, `new` for both, so only
-the probe id tells them apart; each keeps its own argument types. bpftrace
-has not been checked.
+the probe id tells them apart; each keeps its own argument types.
+
+bpftrace 0.20 attaches to every site but turns on only one of them. Each
+definition has its own SDT semaphore, and bpftrace raises the semaphore of
+one site only, so the other functions' enabled checks stay false and their
+probes never fire, under `-p` and `-c` alike. Reading an argument that one
+of the functions does not pass fails: `arg1` when one passes a single value
+is a compile error ("couldn't get argument 1"), and `arg0` when one passes
+none crashed bpftrace. `attach-linux-attr.sh` checks the first part.
+
+Setting `name = "..."` on all but one avoids all of this. Sharing one
+semaphore between every definition of a provider and probe name would let
+bpftrace turn them all on, but not read their arguments. A
+`#[probe_impl(prefix = "...")]` that names every method in an `impl` block
+would save writing `name` on each.
 
 ### `autoref`
 
@@ -163,6 +185,22 @@ The `autoref` feature picks `Serialize`, then `Debug`, by type checking in the
 caller's crate. It is additive: whatever compiles without it encodes the same
 with it. A type that implements neither is a compile error from rustc, worded
 by rustc and pinned only on one toolchain.
+
+## Building
+
+### Many probes that point at local types
+
+Each probe from `probes!` is a module. A probe with a raw pointer to a type
+named relative to the caller's module (`*const Request`, or a `c_void`
+brought in with `use`) glob-imports its parent so the type resolves as it
+does next to the macro. rustc's work for that import grows with the number
+of names in the parent, so many such probes in one module cost the square of
+their number at compile time: `cargo check` peaked at 3.0 GB for 3,000 of
+them, against 0.55 GB for 3,000 probes with integer arguments, which import
+nothing. Writing the pointee as `crate::Request` or `::core::ffi::c_void`, or
+splitting the probes across modules, avoids it. A type alias in the parent
+would avoid the import, but an alias cannot hold a lifetime left out of the
+type (`*const Wrapper` for a `Wrapper<'a>`), which a pointer argument can.
 
 ## Linking and dependencies
 
@@ -357,7 +395,14 @@ dtrace leaves the program running with its probes off. On macOS, killing a
 
 Each executable or library that links anyprobe parses its site table, builds
 DOF and makes one `ioctl` before `main` (or before `dlopen` returns), with an
-allocation for the DOF that lives as long as the object. Nobody has timed it.
+allocation for the DOF that lives as long as the object. In a virtual machine
+that took about 0.03 ms for 10 probes and 9 ms for 3,000, plus 0.03 to 4.5 ms
+for the `ioctl` ([PERFORMANCE.md](PERFORMANCE.md#freebsd-startup)). With
+DTrace loaded, a parent that waits for the program sees about 1.4 ms more
+per run, after the program has exited. A long-running program pays this
+once; a short program run many times in a loop pays it each time. Building
+the DOF before the program runs would need a step between compiling and
+linking, as `dtrace -G` is for C, which Cargo does not have.
 
 ### Argument types in `dtrace -l -v`
 

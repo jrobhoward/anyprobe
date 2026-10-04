@@ -19,6 +19,27 @@ mod nested {
     }
 }
 
+mod pointees {
+    use std::ffi::c_void;
+
+    pub struct Request;
+    pub struct Borrowed<'a>(pub std::marker::PhantomData<&'a u8>);
+
+    // Pointers to names that only resolve in this module: a local struct,
+    // an imported type and a struct with an elided lifetime.
+    anyprobe::probes! {
+        provider = "anyprobe_test";
+        pub fn local_pointee(r: *const Request, v: *mut c_void, b: *const Borrowed);
+    }
+}
+
+#[test]
+fn probes____pointer_to_a_type_from_the_callers_module____compiles() {
+    let borrowed = pointees::Borrowed(std::marker::PhantomData);
+    assert!(!pointees::local_pointee::enabled());
+    pointees::local_pointee::fire(&pointees::Request, std::ptr::null_mut(), &borrowed);
+}
+
 #[test]
 fn probes____in_a_function_body____compile_and_work() {
     // A module nested in a function body resolves `super::` to the enclosing

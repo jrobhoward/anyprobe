@@ -13,8 +13,6 @@ are not computed. Every other target compiles probes to nothing.
 
 The crate is pre-1.0. `docs/ARCHITECTURE.md` holds the design and the
 reasons behind it; read it before changing anything structural.
-`docs/PLAN.md` lists only the work still planned (checks not yet run, open
-design questions, release steps) and is deleted once that list is empty.
 
 ## Commands
 
@@ -144,6 +142,11 @@ spike/scripts/check-gaps-linux.sh        # sudo
 spike/scripts/check-gaps-macos.sh        # sudo for dtrace and lldb; run as yourself
 sh spike/scripts/check-gaps-freebsd.sh   # sudo or doas, lldb
 powershell -ExecutionPolicy Bypass -File spike\scripts\check-gaps-windows.ps1   # elevated; DLL tracing, large strings
+
+# FreeBSD startup cost in docs/PERFORMANCE.md: builds programs with 10 to
+# 3,000 probes and times them. No root; run once with dtraceall loaded and
+# once without. Prints; checks nothing.
+sh spike/scripts/startup-cost-freebsd.sh
 
 # Disabled-probe cost (criterion), as the CI `spike bench` job runs it
 cargo bench -p anyprobe --bench disabled_cost
@@ -413,7 +416,6 @@ across them:
 | File | Holds | Scope |
 |---|---|---|
 | `README.md` | What the crate does, how to use it, and the caveats that change how it should be used | Link out rather than expand |
-| `docs/PLAN.md` | Work still planned before 1.0: unrun checks, open design questions, release steps | Exempt from the writing-style rules. Remove finished items rather than marking them done; a settled decision moves to `ARCHITECTURE.md` or `GAPS.md`. Deleted when empty |
 | `docs/ARCHITECTURE.md` | Module map and why each backend was chosen over its alternatives | Update when a design decision changes; not a development log |
 | `docs/GAPS.md` | Every known limitation, why it exists, and what changing it costs | One section per gap. Add to it rather than quietly narrowing scope |
 | `docs/PERFORMANCE.md` | The cost of a probe with and without a tracer, per platform, and how it was measured | Measured numbers with the machine they came from; say plainly what has not been measured |
@@ -424,8 +426,6 @@ across them:
 | `CLAUDE.md` | Conventions and constraints a contributor needs before editing | Rules, not narrative |
 
 ## Writing style for `README.md`, `docs/**/*.md` and rustdoc
-
-`docs/PLAN.md` is exempt while it exists.
 
 - **No second person, no first person.** Not "your function", "you can", "we
   chose". Describe the crate and what it does: "emits an SDT note", "the

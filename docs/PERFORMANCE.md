@@ -61,11 +61,39 @@ the same function without them, as in `crates/anyprobe/benches/disabled_cost.rs`
   DOF entry or a FreeBSD site record per site) and a registry record of
   about 150 bytes.
 - On FreeBSD, startup also builds and registers the DOF, once per executable
-  or library that links anyprobe. Nobody has timed it.
+  or library that links anyprobe. See [FreeBSD startup](#freebsd-startup).
 
 Run the benchmark with `cargo bench -p anyprobe --bench disabled_cost`.
 Differences below a nanosecond are within the noise of a laptop on battery or
 under load; the instruction count is the steadier comparison.
+
+### FreeBSD startup
+
+Before `main` (or before `dlopen` returns), the constructor parses the site
+table, builds the DOF and passes it to the kernel with one `ioctl`; at exit
+or unload a second `ioctl` removes it. Measured with
+`spike/scripts/startup-cost-freebsd.sh` on FreeBSD 15.0-RELEASE in a KVM
+virtual machine on the Threadripper above: programs with N probes, each probe
+with one probe site and one is-enabled site, against the same program with
+no probes, as the wall time of one run, best of three rounds of 400 runs.
+
+| Probes | Extra time per run, DTrace not loaded | Extra time per run, DTrace loaded | `ADDDOF` ioctl | `REMOVE` ioctl |
+|---|---|---|---|---|
+| 10 | 0.03 ms | 1.4 ms | 0.03 ms | 0.01 ms |
+| 100 | 0.4 ms | 2.1 ms | 0.2 ms | 0.01 ms |
+| 1,000 | 3.4 ms | 7.1 ms | 1.2 ms | 0.06 ms |
+| 3,000 | 9.0 ms | 17.9 ms | 4.5 ms | 3.7 ms |
+
+- With DTrace not loaded, the constructor parses and builds the DOF, then
+  fails to open `/dev/dtrace/helper`. That column is the program's own
+  work: about 3 µs per probe.
+- With DTrace loaded, a program with 10 probes spent 0.1 ms more between
+  `exec` and `_exit` than one with none, measured with the `proc` and
+  `syscall` providers. The rest of the 1.4 ms comes after the process
+  exits, so the program does not see it, but a parent waiting for a short
+  program does. The kernel's handling of it was not broken down further.
+- The two `ioctl` columns are medians of 9 runs under `ktrace`.
+- A process with no probe sites makes no `ioctl`.
 
 ## With a tracer attached
 

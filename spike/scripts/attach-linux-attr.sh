@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Attaches bpftrace to the anyprobe `attr` and `attr_async` examples
-# (`#[probe]`) and checks what it reads from each encoding, from `async fn`,
-# from `unwind`, and through `symbol`.
+# Attaches bpftrace to the anyprobe `attr`, `attr_async` and `same_name`
+# examples (`#[probe]`) and checks what it reads from each encoding, from
+# `async fn`, from `unwind`, through `symbol`, and from three functions that
+# share probe names.
 #
 # Usage: spike/scripts/attach-linux-attr.sh [PROFILE...]
 #   PROFILE defaults to "release release-lto".
@@ -34,6 +35,11 @@
 #     never; `may_panic` fires entry 20 times, return 10 and unwind 10; and
 #     `exported` is reached both by its USDT probe and, through its
 #     `symbol`, by a uprobe, 20 times each with ids 0 to 19;
+#   - with `same_name` run under `bpftrace -c` for 20 iterations: bpftrace
+#     attaches to all three `new__entry` sites, but only one of the three
+#     functions fires, 20 times. Each function has its own semaphore and
+#     bpftrace raises one (docs/GAPS.md, "Methods with the same name"); a
+#     bpftrace that raises them all fails this check;
 #   - the scripts `cargo anyprobe bpftrace` wrote, run under `bpftrace -c`
 #     for 20 iterations, print every probe of both examples with each
 #     argument decoded, the same number of times as above.
@@ -101,9 +107,10 @@ probes_page() {
 }
 
 for profile in "$@"; do
-  echo "== $profile (anyprobe examples attr, attr_async)"
+  echo "== $profile (anyprobe examples attr, attr_async, same_name)"
   profile_failed=0
-  if ! cargo build -q -p anyprobe --example attr --example attr_async --profile "$profile" \
+  if ! cargo build -q -p anyprobe --example attr --example attr_async --example same_name \
+    --profile "$profile" \
     || ! cargo build -q -p cargo-anyprobe; then
     echo "  FAIL  build"
     failed=1
@@ -237,6 +244,19 @@ for profile in "$@"; do
     '^(fetch-entry|fetch-return|slow-entry|slow-unwind|may_panic-entry|exported-entry|exported-uprobe) |^may_panic-(return|unwind)$|^done |^Attaching |^$' \
     "$aout")"
 
+  # Prints the site of every firing; the symbol names the function.
+  same="$PWD/target/$profile/examples/same_name"
+  sout="$work/$profile.same.bpftrace"
+  $sudo timeout 60 bpftrace -c "$same $iterations 20" -e "
+    usdt:$same:same_name:new__entry { printf(\"entry %s\n\", usym(reg(\"ip\"))); }" \
+    >"$sout" 2>&1
+  expect "same_name: bpftrace attaches to all three new__entry sites" \
+    grep -qx 'Attaching 3 probes...' "$sout"
+  fired=$(grep -oE '3Foo3new|3Bar3new|5other3new' "$sout" | sort | uniq -c \
+    | awk '{ printf "%s%s=%d", sep, $2, $1; sep = " " }')
+  expect "same_name: exactly one function fires, $n times ($fired)" \
+    bash -c "[[ '$fired' =~ ^[0-9a-zA-Z]+=$n\$ ]]"
+
   # The generated scripts, as they are.
   gout="$work/$profile.gen.attr.out"
   $sudo timeout 120 bpftrace -c "$bin $iterations 20" "$gen.attr.bt" >"$gout" 2>&1
@@ -282,6 +302,8 @@ for profile in "$@"; do
     head -40 "$out"
     echo "  --- bpftrace output, attr_async (first 40 lines)"
     head -40 "$aout"
+    echo "  --- bpftrace output, same_name (first 40 lines)"
+    head -40 "$sout"
     for f in "$gout" "$gaout"; do
       [ -f "$f" ] && { echo "  --- $(basename "$f") (first 40 lines)"; head -40 "$f"; }
     done

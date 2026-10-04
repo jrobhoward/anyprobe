@@ -1,6 +1,6 @@
 [package]
 name = "anyprobe"
-version = "0.1.0"
+version = "0.9.0"
 description = "USDT-style probes for Rust: SystemTap SDT on Linux, DTrace on macOS and FreeBSD, ETW on Windows"
 keywords = ["tracing", "usdt", "dtrace", "bpftrace", "etw"]
 readme = "../../README.md"
@@ -36,7 +36,7 @@ autoref = ["serde"]
 [dependencies]
 # Exact: generated code calls `anyprobe::__private`, which is not covered by
 # semver, so the macro and the runtime are released in lockstep.
-anyprobe-macros = { version = "=0.1.0", path = "../anyprobe-macros" }
+anyprobe-macros = { version = "=0.9.0", path = "../anyprobe-macros" }
 serde = { version = "1.0.200", optional = true, default-features = false, features = ["std"] }
 serde_json = { version = "1.0.120", optional = true, default-features = false, features = ["std"] }
 thiserror = "2.0.12"

@@ -74,6 +74,49 @@ pub(crate) fn classify(ty: &Type) -> Option<Kind> {
     }
 }
 
+/// Whether `ty` names the same type wherever it is written: it mentions only
+/// primitive types and paths that start with `::` or `crate`. A probe module
+/// writes its parameter types inside itself, so a type that is not
+/// self-contained (`*const Request`) needs the caller's names imported.
+pub(crate) fn is_self_contained(ty: &Type) -> bool {
+    const PRIMITIVES: [&str; 7] = ["bool", "char", "str", "f32", "f64", "u128", "i128"];
+    match ty {
+        Type::Path(p) if p.qself.is_none() => {
+            let segments = &p.path.segments;
+            let rooted = p.path.leading_colon.is_some()
+                || segments
+                    .first()
+                    .is_some_and(|s| s.ident == "crate" || s.ident == "$crate");
+            let primitive = segments.len() == 1
+                && segments.first().is_some_and(|s| {
+                    let name = s.ident.to_string();
+                    UNSIGNED.contains(&name.as_str())
+                        || SIGNED.contains(&name.as_str())
+                        || PRIMITIVES.contains(&name.as_str())
+                });
+            (rooted || primitive)
+                && segments.iter().all(|s| match &s.arguments {
+                    syn::PathArguments::None => true,
+                    syn::PathArguments::AngleBracketed(a) => a.args.iter().all(|arg| match arg {
+                        syn::GenericArgument::Type(t) => is_self_contained(t),
+                        syn::GenericArgument::Lifetime(_) => true,
+                        _ => false,
+                    }),
+                    syn::PathArguments::Parenthesized(_) => false,
+                })
+        }
+        Type::Ptr(p) => is_self_contained(&p.elem),
+        Type::Reference(r) => is_self_contained(&r.elem),
+        Type::Slice(s) => is_self_contained(&s.elem),
+        Type::Array(a) => matches!(&a.len, syn::Expr::Lit(_)) && is_self_contained(&a.elem),
+        Type::Tuple(t) => t.elems.iter().all(is_self_contained),
+        Type::Never(_) => true,
+        Type::Group(g) => is_self_contained(&g.elem),
+        Type::Paren(p) => is_self_contained(&p.elem),
+        _ => false,
+    }
+}
+
 impl Kind {
     /// The parameter type `fire` declares. References lose any lifetime, so
     /// the generated signature needs no generic parameters; other types keep
