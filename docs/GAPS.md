@@ -19,9 +19,12 @@ scripts on an Intel host.
 
 AArch64 Linux and Windows on ARM64 compile (the cross-target loops build
 them), and CI runs the attach checks on GitHub's `ubuntu-24.04-arm` (bpftrace)
-and `windows-11-arm` (ETW) runners. Nobody has run a tracer against either by
-hand. The Linux SDT code uses the 64 KiB section alignment AArch64 needs;
-that value is untested on a kernel with 64 KiB pages.
+and `windows-11-arm` (ETW) runners. On AArch64 Linux the attach and gap
+checks have also been run by hand, with bpftrace 0.25 and perf 7.0 on a
+Raspberry Pi 5 (Ubuntu 26.04, Linux 7.0, 4 KiB pages). Nobody has run a
+tracer against Windows on ARM64 by hand. The Linux SDT code uses the 64 KiB
+section alignment AArch64 needs; that value is untested on a kernel with
+64 KiB pages.
 
 ### FreeBSD
 
@@ -65,12 +68,42 @@ process. bpftrace and perf need neither and are the tested tracers. CI does not 
 SystemTap, which needs building from source on current kernels;
 `spike/scripts/attach-linux-stap.sh` checks it by hand.
 
+### bpftrace versions
+
+Three changes between bpftrace 0.20 (Ubuntu 24.04) and 0.25 (Ubuntu 26.04)
+change what a script reads:
+
+- From 0.23 on, the length given to `str(ptr, len)` counts a NUL, and `str`
+  reads one byte less. A native `&str` has no NUL after it, so `buf(ptr,
+  len)` reads it in every version, and prints bytes outside printable ASCII
+  as `\xNN`. An encoded argument has a NUL after it, so `str(ptr, len + 1)`
+  reads all of it in every version. The scripts `cargo anyprobe bpftrace`
+  writes do both.
+- Under `-p`, 0.25 attaches a probe named by the binary's path twice, once
+  through the path and once through `/proc/PID/root`, and every firing runs
+  the clause twice. `usdt:*:provider:name` attaches once under `-p`, and is
+  what the generated scripts use. `*` covers every file the process has
+  loaded, so a `dlopen`ed library that defines the same provider and probe
+  name is matched as well; nobody has checked what bpftrace then does with
+  the name both files define ("Shared libraries"). Under `-c`, 0.25 attaches
+  a probe named by path once and finds no probes at `usdt:*:`.
+- 0.25 raises the semaphore of every function that shares a probe name, not
+  only one ("Methods with the same name").
+
+Ubuntu 26.04's bpftrace 0.25.0 also prints C compiler warnings about the
+kernel's `vmlinux.h` with every USDT script, and aborts (an assertion in
+`SourceLocation::source_context`) on any script file with a USDT probe, a
+generated script included. Passing the same text with `-e "$(cat FILE)"`
+works. `attach-linux-attr.sh` does that when the file
+aborts, and says so.
+
 ### perf and older kernels
 
 perf attaches only on Linux 4.20 or later with a perf that passes the SDT
 semaphore to the kernel. An older one lists the probe and records nothing.
 The semaphore is the only way a probe knows a tracer is attached, so there is
-no fallback.
+no fallback. perf 7.0 names the event for `%sdt_spike:work__entry`
+`sdt_spike:work_entry`, with one underscore; earlier versions keep both.
 
 ## Arguments
 
@@ -117,10 +150,25 @@ past six needs a different argument passing scheme per backend.
 
 ### Native `&str` has no terminator
 
-A native `&str` is a pointer and a length with no NUL after it. bpftrace and
-dtrace read it with the length. perf and gdb read a NUL-terminated string and
-read past the end. A `&CStr` argument is one pointer to NUL-terminated bytes,
-which those tools read as written.
+A native `&str` is a pointer and a length with no NUL after it. bpftrace
+(with `buf`, see "bpftrace versions") and dtrace read it with the length.
+perf and gdb read a NUL-terminated string and read past the end. A `&CStr`
+argument is one pointer to NUL-terminated bytes, which those tools read as
+written.
+
+### Argument bytes the program has not read
+
+On Linux bpftrace reads a native `&str`, `&[u8]` or `&CStr` argument out of
+the process with a kernel helper that cannot fault a page in. If the bytes
+are in a page of the binary that the process has never read, such as a
+string literal of which the program uses only the length, bpftrace reads
+zeros (`buf`) or an empty string (`str`). Once anything in the process has
+read the page, the value reads correctly. Whether a literal shares a page
+with data the program reads depends on the layout, so a build with LTO can
+show it where a build without does not. An encoded argument is written just
+before the probe fires, so its page is always present. Touching a native
+argument's bytes before each probe would cost the hot path a load, so the
+crate does not; the `attr_async` example reads its literals once at startup.
 
 ### `None` and an empty value look alike
 
@@ -224,10 +272,12 @@ the probe id tells them apart; each keeps its own argument types.
 bpftrace 0.20 attaches to every site but turns on only one of them. Each
 definition has its own SDT semaphore, and bpftrace raises the semaphore of
 one site only, so the other functions' enabled checks stay false and their
-probes never fire, under `-p` and `-c` alike. Reading an argument that one
-of the functions does not pass fails: `arg1` when one passes a single value
-is a compile error ("couldn't get argument 1"), and `arg0` when one passes
-none crashed bpftrace. `attach-linux-attr.sh` checks the first part.
+probes never fire, under `-p` and `-c` alike. bpftrace 0.25 raises every
+semaphore, and all the functions fire. Reading an argument that one of the
+functions does not pass fails: `arg1` when one passes a single value is a
+compile error ("couldn't get argument 1"), and `arg0` when one passes none
+crashed bpftrace 0.20. `attach-linux-attr.sh` checks that bpftrace attaches
+to every site and that one function, or all of them, fire.
 
 Setting `name = "..."` on all but one avoids all of this. Sharing one
 semaphore between every definition of a provider and probe name would let
@@ -290,7 +340,8 @@ cannot attach to a probe name that both the executable and a library in the
 process define: through the executable it reports "Could not resolve symbol",
 through the library "couldn't get argument 1". A probe name that only the
 library defines works. A library that gives its probes a provider name of its
-own avoids both problems. On Windows a DLL loaded with `LoadLibraryW` was
+own avoids both problems. bpftrace 0.25 attaches to such a probe through
+either file, and through both in one program. On Windows a DLL loaded with `LoadLibraryW` was
 traced with one `logman` session (`check-gaps-windows.ps1`): events of a
 provider only the DLL defines were recorded, and events of a provider both
 the executable and the DLL define were recorded from each, since each module
@@ -419,14 +470,14 @@ Each record is about 150 bytes, most of it the source file and module paths.
 A binary with many probes carries that data in a read-only section. Shorter
 paths would need the macro to rewrite `file!()`.
 
-### bpftrace scripts need a plain path
+### bpftrace scripts are for `-p`
 
-`cargo anyprobe bpftrace` writes the binary's absolute path into each
-`usdt:` probe. A path that holds anything other than ASCII letters, digits
-and `/._-+`, such as a space, is refused with an error rather than written
-into a script bpftrace would misread. Copying or linking the binary to a
-plain path works around it. Writing the path in quotes would lift the limit
-on bpftrace versions that accept a quoted path in a probe.
+`cargo anyprobe bpftrace` names each probe `usdt:*:provider:name`, which
+bpftrace resolves in the process `-p` names ("bpftrace versions"). The
+script also attaches to a probe of the same provider and name in another
+file the process has loaded. Under `-c`, bpftrace 0.25 finds no probes at
+`usdt:*:`; putting the binary's path in place of each `*` makes the script
+work there.
 
 ### Record format changes
 

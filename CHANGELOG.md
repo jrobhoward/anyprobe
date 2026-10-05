@@ -100,8 +100,11 @@ released together with the same version.
   `wprp` write a bpftrace script, a D script and a WPR profile that print or
   record every probe. `--bin` and `--example` build the binary first;
   `--provider` and `--probe` select probes; `list --json` gives one object
-  per definition. `bpftrace` needs the binary's path to hold only ASCII
-  letters, digits and `/._-+`.
+  per definition. The bpftrace script is for `bpftrace -p` and names each
+  probe `usdt:*:provider:name`: bpftrace 0.25 attaches a probe named by the
+  binary's path twice under `-p`. It reads a native `&str` with `buf` and
+  encoded text with `str` of its length plus one, which read the same
+  before and after bpftrace 0.23 changed what `str`'s length counts.
 - Examples `demo`, which fires a few probes per second until stopped, and
   `overhead`, which times probed calls with or without a tracer.
 - Documentation: a walkthrough per platform that attaches the native tracer

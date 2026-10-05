@@ -43,15 +43,19 @@
 #     `exported` is reached both by its USDT probe and, through its
 #     `symbol`, by a uprobe, 20 times each with ids 0 to 19;
 #   - with `same_name` run under `bpftrace -c` for 20 iterations: bpftrace
-#     attaches to all three `new__entry` sites, but only one of the three
-#     functions fires, 20 times. Each function has its own semaphore and
-#     bpftrace raises one (docs/GAPS.md, "Methods with the same name"); a
-#     bpftrace that raises them all fails this check;
-#   - the scripts `cargo anyprobe bpftrace` wrote, run under `bpftrace -c`
-#     for 20 iterations, print every probe of both examples with each
-#     argument decoded, the same number of times as above.
+#     attaches to all three `new__entry` sites, and either one of the three
+#     functions fires 20 times (bpftrace 0.20 raises one function's
+#     semaphore) or all three do (0.25 raises them all); docs/GAPS.md,
+#     "Methods with the same name";
+#   - the scripts `cargo anyprobe bpftrace` wrote, run as their header says
+#     (`bpftrace -p PID FILE`) for a few seconds against each running
+#     example, print every probe of both examples with each argument
+#     decoded, and no firing twice: a probe attached twice prints each id
+#     twice.
 # Encoding runs only after the enabled check, so any encoded value read
 # shows that attaching turned the check on.
+# bpftrace runs with --no-warnings. Lines bpftrace prints on its own are left
+# out of the "nothing unexpected" checks (see `noise` below).
 # Prints ok/FAIL per check and exits non-zero if any check failed.
 
 set -uo pipefail
@@ -83,6 +87,34 @@ expect() {
 # Number of lines in FILE matching the extended regex PATTERN, compared with
 # the number expected.
 lines() { test "$(grep -cE "$2" "$3")" -eq "$1"; }
+# At least N lines in FILE match PATTERN.
+atleast() { test "$(grep -cE "$2" "$3")" -ge "$1"; }
+
+# Lines bpftrace prints besides a script's output: "Attaching N probes..."
+# (0.20) or "Attached N probes" (0.24 and later), and the C compiler
+# warnings Ubuntu's bpftrace 0.25 prints about the kernel's vmlinux.h even
+# under --no-warnings.
+noise='^Attach(ing [0-9]+ probes\.\.\.|ed [0-9]+ probes?)$|^HINT: |^[^ ]+:[0-9]+:[0-9]+: warning: |^ *[0-9]* \| |^[0-9]+ warnings? generated\.$|^$'
+
+# Runs the generated script SCRIPT as its header says, `bpftrace -p PID
+# SCRIPT`, for five seconds against COMMAND..., and writes what bpftrace
+# printed to OUT. Ubuntu's bpftrace 0.25.0 aborts on any script file with a
+# USDT probe (docs/GAPS.md, "bpftrace versions"); the same text is then
+# passed with -e, and the run says so.
+generated() {
+  local script=$1 out=$2 pid
+  shift 2
+  "$@" >/dev/null 2>&1 &
+  pid=$!
+  sleep 1
+  $sudo timeout -s INT 5 bpftrace --no-warnings -p "$pid" "$script" >"$out" 2>&1
+  if grep -q "source_context.*Assertion.*failed" "$out"; then
+    echo "  info  bpftrace aborted on $(basename "$script") (a bpftrace bug); passing it with -e"
+    $sudo timeout -s INT 5 bpftrace --no-warnings -p "$pid" -e "$(cat "$script")" >"$out" 2>&1
+  fi
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+}
 
 # Prints "ok" if every SDT note location in BIN is a `nop`, else the first
 # location that is not.
@@ -173,21 +205,27 @@ for profile in "$@"; do
   "$bin" 0 20 >"$log" 2>&1 &
   pid=$!
   sleep 1
-  $sudo timeout 60 bpftrace -p "$pid" -e "
-    usdt:$bin:attr:lookup__entry { printf(\"lookup-entry %d %s\n\", arg0, str(arg1, arg2)); }
-    usdt:$bin:attr:lookup__return { printf(\"lookup-return %d\n\", arg0); }
-    usdt:$bin:attr:query__entry {
-      printf(\"query-entry %d %s\n\", arg0, str(arg1, arg2));
+  # `usdt:*:` rather than the binary's path: under -p, bpftrace 0.25 attaches
+  # a probe named by path twice (the path and /proc/PID/root). A native &str
+  # has no NUL after it and is read with `buf`, which reads its length in
+  # every bpftrace version; `str` reads one byte less from 0.23 on. Encoded
+  # text has a NUL after it, so `str` of its length plus one reads all of it
+  # in every version.
+  $sudo timeout 60 bpftrace --no-warnings -p "$pid" -e "
+    usdt:*:attr:lookup__entry { printf(\"lookup-entry %d %r\n\", arg0, buf(arg1, arg2)); }
+    usdt:*:attr:lookup__return { printf(\"lookup-return %d\n\", arg0); }
+    usdt:*:attr:query__entry {
+      printf(\"query-entry %d %s\n\", arg0, str(arg1, arg2 + 1));
       printf(\"query-entry-nul %s\n\", str(arg1));
     }
-    usdt:$bin:attr:query__return { printf(\"query-return %s\n\", str(arg0, arg1)); }
-    usdt:$bin:attr:wide__entry { printf(\"wide-entry %s\n\", str(arg0, arg1)); }
-    usdt:$bin:attr:counter_bump__entry { printf(\"bump-entry %s %d\n\", str(arg0, arg1), arg2); }
-    usdt:$bin:attr:five__entry {
+    usdt:*:attr:query__return { printf(\"query-return %s\n\", str(arg0, arg1 + 1)); }
+    usdt:*:attr:wide__entry { printf(\"wide-entry %s\n\", str(arg0, arg1 + 1)); }
+    usdt:*:attr:counter_bump__entry { printf(\"bump-entry %s %d\n\", str(arg0, arg1 + 1), arg2); }
+    usdt:*:attr:five__entry {
       printf(\"five-entry %d %d %d %d %d\n\", arg0, (int64)arg1, arg2, arg3, arg4);
     }
-    usdt:$bin:attr:optional__entry {
-      printf(\"optional-entry %s|%d|%s\n\", str(arg0, arg1), arg3, str(arg4));
+    usdt:*:attr:optional__entry {
+      printf(\"optional-entry %r|%d|%s\n\", buf(arg0, arg1), arg3, str(arg4));
     }
     interval:s:3 { exit(); }" >"$out" 2>&1
   sleep 1
@@ -212,12 +250,12 @@ for profile in "$@"; do
   expect "Option<&str> None, Option<&[u8]> Some, &CStr" grep -qE '^optional-entry \|1\|cee$' "$out"
   # Every printed line is one of the formats above.
   expect "nothing unexpected" \
-    test -z "$(grep -vE '^(lookup-entry|lookup-return|query-entry|query-entry-nul|query-return|wide-entry|bump-entry|five-entry|optional-entry) |^Attaching |^$' "$out")"
+    test -z "$(grep -vE '^(lookup-entry|lookup-return|query-entry|query-entry-nul|query-return|wide-entry|bump-entry|five-entry|optional-entry) ' "$out" | grep -vE "$noise")"
 
   # Run under bpftrace, so every call is seen and the counts are exact.
-  $sudo timeout 120 bpftrace -c "$async $iterations 20" -e "
+  $sudo timeout 120 bpftrace --no-warnings -c "$async $iterations 20" -e "
     usdt:$async:attr_async:fetch__entry {
-      printf(\"fetch-entry %d %d %s\n\", arg0, arg1, str(arg2, arg3));
+      printf(\"fetch-entry %d %d %r\n\", arg0, arg1, buf(arg2, arg3));
     }
     usdt:$async:attr_async:fetch__return { printf(\"fetch-return %d %d\n\", arg0, arg1); }
     usdt:$async:attr_async:slow__entry { printf(\"slow-entry %d %d\n\", arg0, arg1); }
@@ -263,8 +301,8 @@ for profile in "$@"; do
   expect "attr_async: uprobe reaches exported by its symbol" \
     test "$(sed -n 's/^exported-uprobe //p' "$aout" | sort -n | tr '\n' ' ')" = "$ids"
   expect "attr_async: nothing unexpected" test -z "$(grep -vE \
-    '^(fetch-entry|fetch-return|slow-entry|slow-unwind|may_panic-entry|exported-entry|exported-uprobe) |^may_panic-(return|unwind)$|^done |^Attaching |^$' \
-    "$aout")"
+    '^(fetch-entry|fetch-return|slow-entry|slow-unwind|may_panic-entry|exported-entry|exported-uprobe) |^may_panic-(return|unwind)$|^done ' \
+    "$aout" | grep -vE "$noise")"
 
   # Prints the site of every firing; the symbol names the function. bpftrace
   # names the program counter `ip` on x86-64 and `pc` on aarch64.
@@ -274,59 +312,72 @@ for profile in "$@"; do
     aarch64 | arm64) pc=pc ;;
     *) pc=ip ;;
   esac
-  $sudo timeout 60 bpftrace -c "$same $iterations 20" -e "
+  $sudo timeout 60 bpftrace --no-warnings -c "$same $iterations 20" -e "
     usdt:$same:same_name:new__entry { printf(\"entry %s\n\", usym(reg(\"$pc\"))); }" \
     >"$sout" 2>&1
-  expect "same_name: bpftrace attaches to all three new__entry sites" \
-    grep -qx 'Attaching 3 probes...' "$sout"
   fired=$(grep -oE '3Foo3new|3Bar3new|5other3new' "$sout" | sort | uniq -c \
     | awk '{ printf "%s%s=%d", sep, $2, $1; sep = " " }')
-  expect "same_name: exactly one function fires, $n times ($fired)" \
-    bash -c "[[ '$fired' =~ ^[0-9a-zA-Z]+=$n\$ ]]"
+  # bpftrace 0.20 counts the three sites ("Attaching 3 probes..."); 0.25
+  # counts the one clause ("Attached 1 probe"), and its sites show up by all
+  # three functions firing.
+  expect "same_name: bpftrace attaches to all three new__entry sites" \
+    bash -c "grep -qx 'Attaching 3 probes...' '$sout' ||
+      [ '$fired' = '3Bar3new=$n 3Foo3new=$n 5other3new=$n' ]"
+  expect "same_name: one function fires $n times, or all three do ($fired)" \
+    bash -c "[[ '$fired' =~ ^[0-9a-zA-Z]+=$n\$ || '$fired' == '3Bar3new=$n 3Foo3new=$n 5other3new=$n' ]]"
 
-  # The generated scripts, as they are.
+  # The generated scripts, as they are. Counts depend on how long bpftrace
+  # was attached, so the checks ask for every line format, at least 50
+  # firings of the busiest probe, and no line printed twice: each of these
+  # lines carries an id or counter that changes with every call.
   gout="$work/$profile.gen.attr.out"
-  $sudo timeout 120 bpftrace -c "$bin $iterations 20" "$gen.attr.bt" >"$gout" 2>&1
+  generated "$gen.attr.bt" "$gout" "$bin" 0 20
   expect "generated: lookup entry and return" bash -c "
-    [ \$(grep -cE '^attr:lookup__entry id=[0-9]+ path=/index\$' '$gout') -eq $n ] &&
-    [ \$(grep -cE '^attr:lookup__return ret=[0-9]*6\$' '$gout') -eq $n ]"
+    atleast() { test \$(grep -cE \"\$2\" \"\$3\") -ge \$1; }
+    atleast 50 '^attr:lookup__entry id=[0-9]+ path=/index\$' '$gout' &&
+    atleast 1 '^attr:lookup__return ret=[0-9]*6\$' '$gout'"
   expect "generated: query serde argument and debug return" bash -c "
-    [ \$(grep -cE '^attr:query__entry id=[0-9]+ q=\{\"table\":\"rows\",\"limit\":5\}\$' '$gout') -eq $n ] &&
-    [ \$(grep -cE '^attr:query__return ret=Ok\(5\)\$' '$gout') -eq $((n / 2)) ] &&
-    [ \$(grep -cE '^attr:query__return ret=Err\(\"odd [0-9]+\"\)\$' '$gout') -eq $((n / 2)) ]"
+    grep -qE '^attr:query__entry id=[0-9]+ q=\{\"table\":\"rows\",\"limit\":5\}\$' '$gout' &&
+    grep -qE '^attr:query__return ret=Ok\(5\)\$' '$gout' &&
+    grep -qE '^attr:query__return ret=Err\(\"odd [0-9]+\"\)\$' '$gout'"
   expect "generated: collapsed arguments" bash -c "
-    [ \$(grep -cE '^attr:wide__entry args=\{\"id\":[0-9]+,' '$gout') -eq $n ] &&
-    [ \$(grep -cE '^attr:wide__return\$' '$gout') -eq $n ]"
+    grep -qE '^attr:wide__entry args=\{\"id\":[0-9]+,' '$gout' &&
+    grep -qE '^attr:wide__return\$' '$gout'"
   expect "generated: debug(self)" bash -c "
-    [ \$(grep -cE '^attr:counter_bump__entry self=Counter \{ n: [0-9]+ \} by=1\$' '$gout') -eq $n ] &&
-    [ \$(grep -cE '^attr:counter_bump__return\$' '$gout') -eq $n ]"
+    grep -qE '^attr:counter_bump__entry self=Counter \{ n: [0-9]+ \} by=1\$' '$gout' &&
+    grep -qE '^attr:counter_bump__return\$' '$gout'"
   expect "generated: five native values" bash -c "
-    [ \$(grep -cE '^attr:five__entry id=[0-9]+ neg=-12 c=13 on=1 last=16\$' '$gout') -eq $n ] &&
-    [ \$(grep -cE '^attr:five__return\$' '$gout') -eq $n ]"
+    grep -qE '^attr:five__entry id=[0-9]+ neg=-12 c=13 on=1 last=16\$' '$gout' &&
+    grep -qE '^attr:five__return\$' '$gout'"
   expect "generated: optional strings and bytes, C string" bash -c "
-    [ \$(grep -cE '^attr:optional__entry name=opt key= label=cee\$' '$gout') -eq $((n / 2)) ] &&
-    [ \$(grep -cE '^attr:optional__entry name= key=.+ label=cee\$' '$gout') -eq $((n / 2)) ] &&
-    [ \$(grep -cE '^attr:optional__return\$' '$gout') -eq $n ]"
+    grep -qE '^attr:optional__entry name=opt key= label=cee\$' '$gout' &&
+    grep -qE '^attr:optional__entry name= key=.+ label=cee\$' '$gout' &&
+    grep -qE '^attr:optional__return\$' '$gout'"
+  expect "generated: attr, no firing printed twice" \
+    test -z "$(grep -E 'id=[0-9]+|n: [0-9]+' "$gout" | sort | uniq -d)"
   expect "generated: attr, nothing unexpected" test -z "$(grep -vE \
-    '^attr:[a-z_]+__(entry|return)( |$)|^(pid|backend)=|^done |^Attaching |^$' "$gout")"
+    '^attr:[a-z_]+__(entry|return)( |$)' "$gout" | grep -vE "$noise")"
 
   gaout="$work/$profile.gen.async.out"
-  $sudo timeout 120 bpftrace -c "$async $iterations 20" "$gen.async.bt" >"$gaout" 2>&1
+  generated "$gen.async.bt" "$gaout" "$async" 100000 20
   expect "generated: fetch entry and return with invocation ids" bash -c "
-    [ \$(grep -cE '^attr_async:fetch__entry invocation=[1-9][0-9]* id=[0-9]+ path=/(a|bb)\$' '$gaout') -eq $((2 * n)) ] &&
-    [ \$(grep -cE '^attr_async:fetch__return invocation=[1-9][0-9]* ret=[0-9]+\$' '$gaout') -eq $((2 * n)) ]"
+    atleast() { test \$(grep -cE \"\$2\" \"\$3\") -ge \$1; }
+    atleast 50 '^attr_async:fetch__entry invocation=[1-9][0-9]* id=[0-9]+ path=/(a|bb)\$' '$gaout' &&
+    atleast 1 '^attr_async:fetch__return invocation=[1-9][0-9]* ret=[0-9]+\$' '$gaout'"
   expect "generated: cancelled slow unwinds, never returns" bash -c "
-    [ \$(grep -cE '^attr_async:slow__unwind invocation=[1-9][0-9]* panicking=0\$' '$gaout') -eq $n ] &&
-    [ \$(grep -cE '^attr_async:slow__return ' '$gaout') -eq 0 ]"
+    grep -qE '^attr_async:slow__unwind invocation=[1-9][0-9]* panicking=0\$' '$gaout' &&
+    ! grep -qE '^attr_async:slow__return ' '$gaout'"
   expect "generated: may_panic entry, return and unwind" bash -c "
-    [ \$(grep -cE '^attr_async:may_panic__entry id=[0-9]+\$' '$gaout') -eq $n ] &&
-    [ \$(grep -cE '^attr_async:may_panic__return\$' '$gaout') -eq $((n / 2)) ] &&
-    [ \$(grep -cE '^attr_async:may_panic__unwind\$' '$gaout') -eq $((n / 2)) ]"
+    grep -qE '^attr_async:may_panic__entry id=[0-9]+\$' '$gaout' &&
+    grep -qE '^attr_async:may_panic__return\$' '$gaout' &&
+    grep -qE '^attr_async:may_panic__unwind\$' '$gaout'"
   expect "generated: exported entry and return" bash -c "
-    [ \$(grep -cE '^attr_async:exported__entry id=[0-9]+\$' '$gaout') -eq $n ] &&
-    [ \$(grep -cE '^attr_async:exported__return\$' '$gaout') -eq $n ]"
+    grep -qE '^attr_async:exported__entry id=[0-9]+\$' '$gaout' &&
+    grep -qE '^attr_async:exported__return\$' '$gaout'"
+  expect "generated: attr_async, no firing printed twice" \
+    test -z "$(grep -E 'invocation=[0-9]+|id=[0-9]+' "$gaout" | sort | uniq -d)"
   expect "generated: attr_async, nothing unexpected" test -z "$(grep -vE \
-    '^attr_async:[a-z_]+__(entry|return|unwind)( |$)|^done |^Attaching |^$' "$gaout")"
+    '^attr_async:[a-z_]+__(entry|return|unwind)( |$)' "$gaout" | grep -vE "$noise")"
 
   if [ "$profile_failed" -ne 0 ]; then
     failed=1

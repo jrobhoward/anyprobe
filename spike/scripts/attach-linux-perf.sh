@@ -55,12 +55,12 @@ expect() {
 
 # Reads `perf script` output on stdin and prints one line per iteration that
 # broke the rules, then "full=<count of complete iterations>". Every site of a
-# probe gets its own event (work__entry, work__entry_1, ...); arg1 is the
-# iteration number.
+# probe gets its own event (work__entry, work__entry_1, ...; perf 7.0 writes
+# work_entry, work_entry_1, ...); arg1 is the iteration number.
 per_iteration() {
   awk '
-    / sdt_spike:work__(entry|return)(_[0-9]+)?: / {
-      kind = ($0 ~ / sdt_spike:work__entry/) ? "entry" : "return"
+    / sdt_spike:work__?(entry|return)(_[0-9]+)?: / {
+      kind = ($0 ~ / sdt_spike:work__?entry/) ? "entry" : "return"
       id = ""
       for (f = 1; f <= NF; f++) if ($f ~ /^arg1=/) { id = substr($f, 6); break }
       if (id == "") next
@@ -104,7 +104,7 @@ for profile in "$@"; do
   $sudo perf buildid-cache --add "$bin" >"$probe_out" 2>&1
   $sudo perf probe -x "$bin" -a '%sdt_spike:work__entry' -a '%sdt_spike:work__return' \
     >>"$probe_out" 2>&1
-  expect "perf probe added the SDT events" grep -q 'sdt_spike:work__entry' "$probe_out"
+  expect "perf probe added the SDT events" grep -qE 'sdt_spike:work__?entry' "$probe_out"
 
   "$bin" 0 20 >"$log" 2>&1 &
   pid=$!

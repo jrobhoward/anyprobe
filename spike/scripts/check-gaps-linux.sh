@@ -5,9 +5,9 @@
 #     process"). For bpftrace and for `perf record`, killed with SIGKILL
 #     while attached to the `work` example: while attached, the semaphore is
 #     raised (by one per uprobe, so by the number of sites) and every
-#     work__entry site starts with a breakpoint (0xcc); after the kill, the
-#     semaphore is back to 0, every site is a `nop` (0x90) again, and the
-#     program itself reports the probe off.
+#     work__entry site starts with a breakpoint (x86-64 `int3`, AArch64
+#     `brk`); after the kill, the semaphore is back to 0, every site is a
+#     `nop` again, and the program itself reports the probe off.
 #   - A probe in a `cdylib` loaded with `dlopen` can be traced ("Shared
 #     libraries"). A scratch library defines `plugonly:tick` and
 #     `shared:tick`; the executable that loads it defines `shared:tick` too.
@@ -25,7 +25,9 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 command -v bpftrace >/dev/null || { echo "bpftrace not found" >&2; exit 2; }
 command -v perf >/dev/null || { echo "perf not found" >&2; exit 2; }
-sudo -v || exit 2
+# `sudo true` rather than `sudo -v`: sudo-rs (Ubuntu 25.10 and later) asks
+# `-v` for a password even under NOPASSWD.
+sudo true || exit 2
 
 work=$(mktemp -d)
 pids=()
@@ -100,19 +102,29 @@ pids+=("$pid")
 sleep 1
 base=$(load_base "$pid" "$bin")
 sema=$((base + sema_vaddr))
-nops=$(printf '144 %.0s' $(seq "$nsites")); nops=${nops% }
-traps=$(printf '204 %.0s' $(seq "$nsites")); traps=${traps% }
+# The first byte of a `nop` and of the breakpoint the kernel writes for a
+# uprobe: 0x90 and 0xcc (`int3`) on x86-64; on AArch64, little-endian
+# d503201f and d42000a0 (`brk #5`).
+case $(uname -m) in
+  aarch64 | arm64) nop=31 trap=160 ;;
+  *) nop=144 trap=204 ;;
+esac
+nops=$(printf "$nop %.0s" $(seq "$nsites")); nops=${nops% }
+traps=$(printf "$trap %.0s" $(seq "$nsites")); traps=${traps% }
 expect "before: semaphore 0, every site a nop" \
   test "$(semaphore "$pid" "$sema"):$(site_bytes "$pid")" = "0:$nops"
 
 for tracer in bpftrace perf; do
   from=$(($(wc -l <"$log") + 1))
   if [ "$tracer" = bpftrace ]; then
-    sudo bpftrace -p "$pid" -e "usdt:$bin:spike:work__entry { @n = count(); }" \
+    # `usdt:*:`: under -p, bpftrace 0.25 attaches a probe named by path
+    # twice, through the path and through /proc/PID/root.
+    sudo bpftrace -p "$pid" -e "usdt:*:spike:work__entry { @n = count(); }" \
       >"$work/bpftrace.out" 2>&1 &
   else
     sudo perf probe -q -x "$bin" -a 'sdt_spike:work__entry' >"$work/perf-probe.out" 2>&1
-    sudo perf record -q -e 'sdt_spike:work__entry' -p "$pid" -o "$work/perf.data" \
+    # perf 7.0 names the event work_entry, earlier versions work__entry.
+    sudo perf record -q -e 'sdt_spike:*' -p "$pid" -o "$work/perf.data" \
       >"$work/perf.out" 2>&1 &
   fi
   wait_enabled true "$from"
@@ -225,27 +237,31 @@ hpid=$!
 pids+=("$hpid")
 for _ in $(seq 50); do grep -q loaded "$hlog" && break; sleep 0.1; done
 
-# Runs bpftrace -p on the host for 2 s with CLAUSES; prints the output.
+# Runs bpftrace -p on the host for 2 s with CLAUSES; prints the output. The
+# clauses name each file by path, which bpftrace 0.25 attaches twice under
+# -p, so counts can be double; the checks only ask for more than 20. The
+# labels are native &str, read with `buf` (see attach-linux.sh).
 trace() {
   sudo timeout 20 bpftrace -p "$hpid" -e "$1 interval:s:2 { exit(); }" 2>&1
 }
-# Firings counted under KEY in bpftrace output FILE.
-fired() { awk -v k="@[$1]:" '$1 == k { print $2 }' "$2"; }
+# Firings counted under KEY in bpftrace output FILE. bpftrace 0.20 prints a
+# `buf` key padded to its full size with \x00, which is dropped here.
+fired() { awk -v k="@[$1]:" '{ key = $1; gsub(/\\x00/, "", key) } key == k { print $2 }' "$2"; }
 
-trace "usdt:$lib:plugonly:tick { @[str(arg0, arg1)] = count(); }" >"$work/dl1.bt"
+trace "usdt:$lib:plugonly:tick { @[buf(arg0, arg1)] = count(); }" >"$work/dl1.bt"
 n=$(fired plugonly "$work/dl1.bt")
 expect "bpftrace reads a probe only the library defines (${n:-0} firings)" test "${n:-0}" -gt 20
 
 for what in "$host:host" "$lib:plug"; do
   f="${what%:*}"
   k="${what##*:}"
-  trace "usdt:$f:shared:tick { @[str(arg0, arg1)] = count(); }" >"$work/dl-$k.bt"
+  trace "usdt:$f:shared:tick { @[buf(arg0, arg1)] = count(); }" >"$work/dl-$k.bt"
   n=$(fired "$k" "$work/dl-$k.bt")
   echo "  info  shared:tick in $(basename "$f") alone: ${n:-0} firings"
   [ -n "$n" ] || sed 's/^/        /' "$work/dl-$k.bt"
 done
-trace "usdt:$host:shared:tick { @[str(arg0, arg1)] = count(); }
-       usdt:$lib:shared:tick { @[str(arg0, arg1)] = count(); }" >"$work/dl-both.bt"
+trace "usdt:$host:shared:tick { @[buf(arg0, arg1)] = count(); }
+       usdt:$lib:shared:tick { @[buf(arg0, arg1)] = count(); }" >"$work/dl-both.bt"
 echo "  info  shared:tick in both files, one program: host $(fired host "$work/dl-both.bt" || true), plug $(fired plug "$work/dl-both.bt" || true)"
 grep -q ERROR "$work/dl-both.bt" && sed 's/^/        /' "$work/dl-both.bt"
 kill "$hpid" 2>/dev/null

@@ -19,7 +19,9 @@ demo=$PWD/target/release/examples/demo
 over=$PWD/target/release/examples/overhead
 cli=$PWD/target/release/cargo-anyprobe
 out=$(mktemp -d)
-sudo -v || exit 2
+# `sudo true` rather than `sudo -v`, which sudo-rs asks for a password even
+# under NOPASSWD.
+sudo true || exit 2
 cleanup() {
   sudo perf probe -q -d 'sdt_demo:*' >/dev/null 2>&1
   sudo perf probe -q -d 'sdt_overhead:*' >/dev/null 2>&1
@@ -48,12 +50,12 @@ sudo bpftrace -l "usdt:$demo:*" 2>&1
 
 echo "=== one-liner, 3 s"
 sudo bpftrace -p "$pid" -e "
-  usdt:$demo:demo:tick { printf(\"tick %d\n\", arg0); }
-  usdt:$demo:demo:checkout__entry {
-    printf(\"checkout id=%d customer=%s order=%s\n\",
-           arg0, str(arg1, arg2), str(arg3, arg4));
+  usdt:*:demo:tick { printf(\"tick %d\n\", arg0); }
+  usdt:*:demo:checkout__entry {
+    printf(\"checkout id=%d customer=%r order=%s\n\",
+           arg0, buf(arg1, arg2), str(arg3, arg4 + 1));
   }
-  usdt:$demo:demo:checkout__return { printf(\"checkout returned %d\n\", arg0); }
+  usdt:*:demo:checkout__return { printf(\"checkout returned %d\n\", arg0); }
   interval:s:3 { exit(); }" 2>&1
 
 echo "=== cargo anyprobe bpftrace"
@@ -86,10 +88,10 @@ sudo bpftrace -c "$over $calls" \
   -e "usdt:$over:overhead:* { @[probe] = count(); }" 2>&1
 echo "=== overhead, bpftrace with printf of every argument, $calls calls (output discarded)"
 sudo bpftrace -c "$over $calls" -e "
-  usdt:$over:overhead:native__entry { printf(\"%d %s\n\", arg0, str(arg1, arg2)); }
-  usdt:$over:overhead:encoded__entry { printf(\"%d %s\n\", arg0, str(arg1, arg2)); }
+  usdt:$over:overhead:native__entry { printf(\"%d %r\n\", arg0, buf(arg1, arg2)); }
+  usdt:$over:overhead:encoded__entry { printf(\"%d %s\n\", arg0, str(arg1, arg2 + 1)); }
   usdt:$over:overhead:native__return, usdt:$over:overhead:encoded__return { printf(\"%d\n\", arg0); }" \
-  2>&1 | grep -E '^(Attaching|pid=|baseline|native |encoded |Lost|WARNING|ERROR)'
+  2>&1 | grep -E '^(Attach|pid=|baseline|native |encoded |Lost|WARNING|ERROR)'
 echo "=== overhead, perf record of every probe, $calls calls"
 sudo perf probe -q -d 'sdt_overhead:*' >/dev/null 2>&1
 sudo perf buildid-cache --add "$over" 2>&1

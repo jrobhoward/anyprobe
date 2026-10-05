@@ -81,11 +81,18 @@ fn main() {
     // `may_panic` panics on purpose; its message is noise here.
     std::panic::set_hook(Box::new(|_| {}));
 
+    // A tracer on Linux reads `path` with a helper that cannot fault a page
+    // in, and `fetch` uses only its length. Reading the bytes once here keeps
+    // their page resident before the first probe (docs/GAPS.md, "Argument
+    // bytes the program has not read").
+    let [pa, pb] = std::hint::black_box(["/a", "/bb"]);
+    std::hint::black_box(pa.bytes().chain(pb.bytes()).fold(0u8, u8::wrapping_add));
+
     let mut cx = Context::from_waker(Waker::noop());
     let mut sum = 0u64;
     for i in 0..iterations {
-        let mut a = pin!(fetch(2 * i, "/a"));
-        let mut b = pin!(fetch(2 * i + 1, "/bb"));
+        let mut a = pin!(fetch(2 * i, pa));
+        let mut b = pin!(fetch(2 * i + 1, pb));
         // Both start (entry probes), then `b` finishes before `a`.
         assert!(a.as_mut().poll(&mut cx).is_pending());
         assert!(b.as_mut().poll(&mut cx).is_pending());

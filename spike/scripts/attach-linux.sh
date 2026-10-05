@@ -72,10 +72,20 @@ for profile in "$@"; do
   "$bin" 0 20 >"$log" 2>&1 &
   pid=$!
   sleep 1
+  # `usdt:*:` rather than the binary's path: under -p, bpftrace 0.25 attaches
+  # a probe named by path twice (the path and /proc/PID/root), and every
+  # firing counts twice. The label is a native &str with no NUL after it;
+  # `buf` reads its length in every bpftrace version, while `str` reads one
+  # byte less from 0.23 on and one byte more before. bpftrace 0.20 cannot
+  # load a `buf` in a map key tuple, so each firing prints a line and awk
+  # counts them into the map format per-iteration.awk reads.
   $sudo timeout 60 bpftrace -p "$pid" -e "
-    usdt:$bin:spike:work__entry { @e[arg0, str(arg1, arg2)] = count(); }
-    usdt:$bin:spike:work__return { @r[arg0] = count(); }
-    interval:s:3 { exit(); }" >"$out" 2>&1
+    usdt:*:spike:work__entry { printf(\"e %d %r\n\", arg0, buf(arg1, arg2)); }
+    usdt:*:spike:work__return { printf(\"r %d\n\", arg0); }
+    interval:s:3 { exit(); }" >"$out.lines" 2>&1
+  awk '$1 == "e" && NF == 3 { n["@e[" $2 ", " $3 "]"]++ }
+       $1 == "r" && NF == 2 { n["@r[" $2 "]"]++ }
+       END { for (k in n) print k ": " n[k] }' "$out.lines" >"$out"
   sleep 1
   kill "$pid" 2>/dev/null
   wait "$pid" 2>/dev/null
@@ -96,8 +106,8 @@ for profile in "$@"; do
     failed=1
     echo "  --- spike output"
     cat "$log"
-    echo "  --- bpftrace output"
-    cat "$out"
+    echo "  --- bpftrace output (first 40 lines)"
+    head -40 "$out.lines"
   fi
 done
 

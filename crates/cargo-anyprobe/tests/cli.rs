@@ -143,28 +143,16 @@ fn list_json____this_binary____gives_one_object_per_definition() {
 #[test]
 fn bpftrace____this_binary____has_a_clause_per_probe() {
     let run = cli(&["bpftrace", "--provider", "clitest"]);
-    // A Windows path holds `\` and `:`, which bpftrace cannot take in a probe.
-    if cfg!(windows) {
-        assert!(!run.status.success(), "{}", run.stdout);
-        assert!(
-            run.stderr.contains("bpftrace cannot attach"),
-            "{}",
-            run.stderr
-        );
-        return;
-    }
     assert!(run.status.success(), "{}", run.stderr);
     if !listed() {
         return;
     }
-    let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
     let out = &run.stdout;
     assert!(
-        out.contains(&format!(
-            "usdt:{}:clitest:lookup__entry\n{{\n\tprintf(\"clitest:lookup__entry id=%lu key=%s\\n\", \
-             arg0, str(arg1, arg2));\n}}\n",
-            exe.display()
-        )),
+        out.contains(
+            "usdt:*:clitest:lookup__entry\n{\n\tprintf(\"clitest:lookup__entry id=%lu key=%r\\n\", \
+             arg0, buf(arg1, arg2));\n}\n"
+        ),
         "{out}"
     );
     assert_eq!(out.matches("usdt:").count(), 5, "{out}");

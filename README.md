@@ -151,10 +151,11 @@ named `http2` have the provider `http2_` unless it sets `provider = "..."`.
 
 ## Attaching
 
-Linux, with bpftrace (`str(ptr, len)` reads a `&str`):
+Linux, with bpftrace (`buf(ptr, len)` reads a `&str`; under `-p`, `usdt:*:`
+finds the probe in whichever file of the process holds it):
 
 ```text
-sudo bpftrace -p PID -e 'usdt:/path/to/binary:myapp:request__start { printf("%d %s\n", arg0, str(arg1, arg2)); }'
+sudo bpftrace -p PID -e 'usdt:*:myapp:request__start { printf("%d %r\n", arg0, buf(arg1, arg2)); }'
 ```
 
 macOS and FreeBSD, with dtrace (DTrace shows `__` in a probe name as `-`):
@@ -182,11 +183,12 @@ for `probes!`.
 
 An encoded argument (`debug`, `serde`, or arguments combined into one JSON
 object) is a string: a pointer and a length, followed by a NUL byte. bpftrace
-reads it with `str(ptr, len)`, dtrace with `copyinstr(ptr, len)`; perf and
-gdb read it as a NUL-terminated string. Encoded values are cut at 4096
+reads it with `str(ptr, len + 1)`, dtrace with `copyinstr(ptr, len)`; perf
+and gdb read it as a NUL-terminated string. Encoded values are cut at 4096
 bytes, and a cut value ends with `...`; bpftrace reads 64 bytes by default
-(`BPFTRACE_MAX_STRLEN`). A native
-`&str` has no NUL after it, so perf and gdb do not read one correctly.
+(`BPFTRACE_MAX_STRLEN`). A native `&str` has no NUL after it, so perf and
+gdb do not read one correctly, and bpftrace reads it with `buf(ptr, len)`:
+from bpftrace 0.23 on, `str(ptr, len)` reads one byte less than `len`.
 
 ## Listing probes
 
@@ -253,9 +255,9 @@ other crate, and the program building them could not turn them back on.
   names unless one sets `name = "..."`. If their arguments differ, each site
   still passes its own. On macOS a dtrace script tells them apart by the
   function it reports (`probefunc`); on FreeBSD both report `new`, and only
-  the probe id differs. bpftrace turns on only one of them. `cargo anyprobe
-  list` warns about such probes, and its scripts print no arguments for
-  them.
+  the probe id differs. bpftrace 0.20 turns on only one of them; 0.25 turns
+  on all of them. `cargo anyprobe list` warns about such probes, and its
+  scripts print no arguments for them.
 - `anyprobe::list()` reads the executable or library it is linked into, not
   shared libraries loaded alongside it. Each probe's description takes
   about 150 bytes, most of it the source file path and module path.

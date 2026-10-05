@@ -5,7 +5,8 @@ records it, and how each platform differs.
 
 | Target | No tracer attached, per probe | Tracer attached, per firing |
 |---|---|---|
-| Linux | one load and compare of the SDT semaphore: about 0.4 ns | one breakpoint trap into the kernel and the tracer's BPF program: 0.4 to 0.6 µs measured with bpftrace, about 1.2 µs with `perf record` |
+| Linux x86-64 | one load and compare of the SDT semaphore: about 0.4 ns | one breakpoint trap into the kernel and the tracer's BPF program: 0.4 to 0.6 µs measured with bpftrace, about 1.2 µs with `perf record` |
+| Linux AArch64 | one load and compare of the SDT semaphore: about 0.3 ns | one breakpoint trap into the kernel and the tracer's BPF program: 0.4 to 0.5 µs measured with bpftrace, 0.7 to 0.8 µs with `perf record` |
 | macOS | one instruction that ld64 wrote to set the result to false: about 0.16 ns | two traps into the kernel and the D clause: 0.7 to 2.3 µs measured |
 | FreeBSD (x86-64) | one `xor eax, eax`: about 0.37 ns | two traps into the kernel and the D clause: 1.0 to 1.3 µs measured, in a virtual machine |
 | Windows | one load of an atomic flag: about 0.24 ns | no trap; the event is built in the process and written with one system call: 0.4 to 0.5 µs measured |
@@ -39,6 +40,7 @@ the same function without them, as in `crates/anyprobe-bench/benches/disabled_co
 | Machine | Without probes | With two probes | Per probe |
 |---|---|---|---|
 | Apple M1, macOS | 0.95 ns | 1.27 ns | 0.16 ns |
+| Raspberry Pi 5 (Cortex-A76, 2.4 GHz), Linux AArch64 | 2.74 ns | 3.32 ns | 0.29 ns |
 | AMD Threadripper 1950X, Linux x86-64 | 1.63 ns | 2.40 ns | 0.39 ns |
 | Same machine, Windows x86-64 | 1.91 ns | 2.40 ns | 0.24 ns |
 | Same machine, FreeBSD 15.0 x86-64 in a KVM virtual machine | 1.65 ns | 2.39 ns | 0.37 ns |
@@ -54,7 +56,8 @@ the same function without them, as in `crates/anyprobe-bench/benches/disabled_co
   under the same probe name.
 - `--cfg anyprobe_dylib` (Linux, Rust `dylib` crates only) loads the
   semaphore through the GOT: 0.98 ns instead of 0.77 ns for two probes on the
-  Threadripper.
+  Threadripper. On the Raspberry Pi 5 it measured 0.51 ns against 0.59 ns,
+  a difference within the noise between runs.
 - `unwind` adds a guard flag. An `async fn` draws an invocation id only when
   its entry probe is enabled.
 - Size: each probe adds its cold helper, its tracer metadata (an SDT note, a
@@ -124,7 +127,10 @@ firing. Each firing is one trap. The kernel's uprobe benchmark (commit
 `d41bc48bfab2`, "selftests/bpf: Add uprobe triggering overhead benchmarks",
 Linux 5.17) measured about 0.56 µs for a uprobe on a `nop`, which is what an
 SDT site is, against 1.4 µs on another instruction. Later kernels have made
-uprobes faster.
+uprobes faster. The breakpoint is `int3` on x86-64 and `brk` on AArch64;
+the rest of the path is the same.
+
+#### x86-64
 
 Measured with the `overhead` example on an AMD Threadripper 1950X, Ubuntu
 24.04 (Linux 6.8), `schedutil` governor, bpftrace 0.20.2 and perf 6.8.12,
@@ -146,6 +152,32 @@ the example filled it, so that row is a lower bound on the cost of printing
 every firing. `perf record` costs about twice as much per firing, about
 1.2 µs. It wrote 769 MB and reported one lost chunk; `perf script` read
 8,000,262 samples against the 8,000,000 the example fires. Each figure is one
+run.
+
+#### AArch64
+
+Measured with the `overhead` example on a Raspberry Pi 5 (Cortex-A76,
+2.4 GHz, 8 GB), Ubuntu 26.04 (Linux 7.0), `ondemand` governor, bpftrace
+0.25.0 and perf 7.0, 1,000,000 calls of each function, each call firing an
+entry and a return probe:
+
+| Tracer action on every probe | `native` | `encoded` |
+|---|---|---|
+| none attached | 3.3 ns per call | 3.9 ns per call |
+| bpftrace, `@[probe] = count()` | 731 ns per call | 936 ns per call |
+| bpftrace, `printf` of every argument | 1323 ns per call | 1556 ns per call |
+| `perf record` to a file | 1363 ns per call | 1610 ns per call |
+
+That is 0.4 to 0.5 µs per firing under bpftrace, a little less than on the
+Threadripper, with `encoded` about 0.1 µs higher for formatting its argument
+with `{:?}`. Two more counting runs measured within 1% of the first. The
+counting run saw all 8,000,000 firings. The `printf` run lost 4,121,177 of
+them, so as on x86-64 that row is a lower bound. `perf record` costs 0.7 to
+0.8 µs per firing, about the same as the bpftrace `printf` run, where on the
+Threadripper it cost about twice as much as bpftrace. It wrote 760 MB and
+reported no lost chunks; `perf script` read 8,010,576 samples against the
+8,000,000 the example fires, between 1,800 and 3,800 extra per event, and
+the run does not show why. Apart from the counting run, each figure is one
 run.
 
 ### macOS

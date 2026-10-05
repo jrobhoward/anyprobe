@@ -218,7 +218,7 @@ fn run(options: &Options) -> Result<String, Error> {
     Ok(match options.command {
         Command::List if options.json => report::list_json(&groups),
         Command::List => report::list_text(&groups),
-        Command::Bpftrace => script::bpftrace(&path, &groups)?,
+        Command::Bpftrace => script::bpftrace(&path, &groups),
         Command::Dtrace => script::dtrace(&path, &groups),
         Command::Wprp => script::wprp(&path, &groups),
         Command::Help | Command::Version => String::new(),

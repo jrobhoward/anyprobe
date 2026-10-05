@@ -63,7 +63,7 @@
 //! dtrace on macOS and FreeBSD.
 //!
 //! ```text
-//! sudo bpftrace -p PID -e 'usdt:/path/to/bin:myapp:request__start { printf("%s\n", str(arg1, arg2)); }'
+//! sudo bpftrace -p PID -e 'usdt:*:myapp:request__start { printf("%r\n", buf(arg1, arg2)); }'
 //! sudo dtrace -p PID -n 'myapp$target:::request-start { printf("%s\n", copyinstr(arg1, arg2)); }'
 //! ```
 //!
